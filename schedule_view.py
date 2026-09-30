@@ -12,6 +12,41 @@ from typing import Any
 
 from .config import Settings, fmt_hhmm
 
+
+def injection_reject_reason(
+    *,
+    umo_kind_str: str,
+    is_primary: bool,
+    primary_umo: str | None,
+    binding: dict[str, Any] | None,
+    persona_id: str,
+    settings: Settings,
+) -> str:
+    """判断某窗口当前是否应注入日程；返回拒绝原因（空串 = 允许注入）。
+
+    规则（v1.0.9 起）：
+    - **主窗口（主动消息投递目标）无条件注入**——它本来就是启用条件的一部分，
+      用户配置了它就意味着期望日程在这个窗口生效（即使绑定表里没有这条记录，
+      例如投递窗口是靠配置 primary_umo 指定的）；
+    - 其他窗口：已绑定到当前人格的注入；未绑定的窗口需要 auto_bind 开启
+      （调用方会先登记再判定）。
+    """
+    if umo_kind_str not in settings.inject_scopes:
+        return f"窗口类型 {umo_kind_str or 'unknown'} 不在注入范围内（inject.scopes）"
+    if not primary_umo:
+        return "插件还没有可用的投递窗口（人格与窗口未配置完整）"
+    if is_primary:
+        return ""
+    if binding is not None:
+        if str(binding.get("persona_id") or "") != persona_id:
+            return "该窗口绑定的是其他人格的日程"
+        if not int(binding.get("enabled") or 0):
+            return "该窗口的绑定已被停用"
+        return ""
+    if not settings.window_auto_bind:
+        return "该窗口未绑定到当前人格，且「自动登记窗口绑定」未开启"
+    return ""
+
 _WEEKDAY_NAMES = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
 _SLEEP_KEYWORDS = ("睡", "入眠", "梦乡", "歇下")

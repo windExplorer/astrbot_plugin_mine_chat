@@ -241,6 +241,23 @@ class MineChatPlugin(Star):
         self._warned.add(key)
         logger.warning(message, *args)
 
+    def _inject_skip(self, reason: str) -> None:
+        """注入被拒绝时记录原因：同类原因只 warning 一次，之后降为 debug。
+
+        用户报告过「问角色今天有什么安排，它说没有」——多半就卡在这些分支里，
+        所以每个原因都要在日志里可见、可自查。
+        """
+        key = f"inject:{reason}"
+        if key in self._warned:
+            logger.debug("mine_chat: 注入跳过：%s", reason)
+            return
+        self._warned.add(key)
+        logger.warning(
+            "mine_chat: 本次未注入日程——%s（同类原因只提示一次；"
+            "用户问「今天有什么安排」却答不上来，多半卡在这里）",
+            reason,
+        )
+
     # ------------------------------------------------------------------ #
     # 事件：用户消息
     # ------------------------------------------------------------------ #
@@ -294,23 +311,24 @@ class MineChatPlugin(Star):
         umo = getattr(event, "unified_msg_origin", "") or ""
         if not umo:
             return
-        if scope_mod.umo_kind(umo) not in settings.inject_scopes:
-            return
 
         persona_id = await self.resolver.resolve_persona_id(umo)
-        await self.resolver.ensure_binding(
-            umo, persona_id, auto_register=settings.window_auto_bind
-        )
-        # 显式配置优先：只对已绑定到当前人格的窗口注入（auto_bind 开启时会顺手登记）。
+        primary = await self.resolver.primary_umo_for(persona_id)
         binding = await self.store.get_binding(umo)
-        if binding is not None:
-            if str(binding.get("persona_id") or "") != persona_id:
-                return
-            if not int(binding.get("enabled") or 0):
-                return
-        elif not settings.window_auto_bind:
-            return
-        if not await self.resolver.primary_umo_for(persona_id):
+        if binding is None and settings.window_auto_bind:
+            await self.resolver.ensure_binding(umo, persona_id, auto_register=True)
+            binding = await self.store.get_binding(umo)
+
+        reason = view_mod.injection_reject_reason(
+            umo_kind_str=scope_mod.umo_kind(umo),
+            is_primary=bool(primary and primary == umo),
+            primary_umo=primary,
+            binding=binding,
+            persona_id=persona_id,
+            settings=settings,
+        )
+        if reason:
+            self._inject_skip(f"{reason}（{umo}）")
             return
 
         plan_date = await self.schedule_service.resolve_active_date(persona_id)
@@ -318,6 +336,7 @@ class MineChatPlugin(Star):
         if not plan or not plan.get("items"):
             if settings.schedule_enabled:
                 self._ensure_plan_background(persona_id, umo)
+            self._inject_skip("今天还没有日程（正在后台生成）")
             return
 
         state = await self.store.get_proactive_state(persona_id)
@@ -334,8 +353,18 @@ class MineChatPlugin(Star):
             unanswered=int(state.get("unanswered") or 0),
         )
         if not block:
+            self._inject_skip("日程条目为空")
             return
         self._apply_injection(req, block, settings)
+        if "inject:ok" not in self._warned:
+            self._warned.add("inject:ok")
+            logger.info(
+                "mine_chat: 日程注入已生效（模式 %s，本次 %s 字，人格 %s，窗口 %s）",
+                settings.inject_mode,
+                len(block),
+                persona_id,
+                umo,
+            )
 
     @staticmethod
     def _apply_injection(req: Any, block: str, settings: config_mod.Settings) -> None:

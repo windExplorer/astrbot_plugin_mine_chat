@@ -538,6 +538,137 @@ def test_image_backends(c: Checker) -> None:
     c.equal("点开头扩展名", meme_cache_filename("id", ".gif"), "id.gif")
 
 
+def test_injection_gate(c: Checker) -> None:
+    print("\n[11] 注入资格判定")
+    ns = load_defs(
+        "schedule_view.py",
+        {"injection_reject_reason"},
+        {
+            "Settings": config_mod.Settings,
+            "fmt_hhmm": config_mod.fmt_hhmm,
+            "datetime": datetime,
+            "date_cls": date,
+        },
+    )
+    gate = ns["injection_reject_reason"]
+
+    private_only = config_mod.Settings.from_config({"inject_scopes": ["private"]})
+    both = config_mod.Settings.from_config({})
+    binding = {"persona_id": "小满", "enabled": 1}
+
+    c.equal(
+        "主窗口无条件注入（即使绑定表没有记录）",
+        gate(
+            umo_kind_str="private",
+            is_primary=True,
+            primary_umo="p:FriendMessage:1",
+            binding=None,
+            persona_id="小满",
+            settings=private_only,
+        ),
+        "",
+    )
+    c.check(
+        "绑定匹配的窗口可注入",
+        gate(
+            umo_kind_str="private",
+            is_primary=False,
+            primary_umo="p:FriendMessage:1",
+            binding=binding,
+            persona_id="小满",
+            settings=private_only,
+        )
+        == "",
+    )
+    c.check(
+        "绑定了其他人格拒绝",
+        gate(
+            umo_kind_str="private",
+            is_primary=False,
+            primary_umo="p:FriendMessage:1",
+            binding={"persona_id": "别人", "enabled": 1},
+            persona_id="小满",
+            settings=private_only,
+        )
+        != "",
+    )
+    c.check(
+        "绑定停用拒绝",
+        gate(
+            umo_kind_str="private",
+            is_primary=False,
+            primary_umo="p:FriendMessage:1",
+            binding={"persona_id": "小满", "enabled": 0},
+            persona_id="小满",
+            settings=private_only,
+        )
+        != "",
+    )
+    c.check(
+        "未绑定且 auto_bind 关拒绝（v1.0.3 引入的老问题）",
+        gate(
+            umo_kind_str="private",
+            is_primary=False,
+            primary_umo="p:FriendMessage:1",
+            binding=None,
+            persona_id="小满",
+            settings=private_only,
+        )
+        != "",
+    )
+    auto = config_mod.Settings.from_config(
+        {"inject_scopes": ["private"], "window_auto_bind": True}
+    )
+    c.check(
+        "未绑定但 auto_bind 开可注入",
+        gate(
+            umo_kind_str="private",
+            is_primary=False,
+            primary_umo="p:FriendMessage:1",
+            binding=None,
+            persona_id="小满",
+            settings=auto,
+        )
+        == "",
+    )
+    c.check(
+        "群聊不在注入范围拒绝",
+        gate(
+            umo_kind_str="group",
+            is_primary=False,
+            primary_umo="p:FriendMessage:1",
+            binding=binding,
+            persona_id="小满",
+            settings=private_only,
+        )
+        != "",
+    )
+    c.check(
+        "群聊在范围且为主窗口可注入",
+        gate(
+            umo_kind_str="group",
+            is_primary=True,
+            primary_umo="p:GroupMessage:2",
+            binding=None,
+            persona_id="小满",
+            settings=both,
+        )
+        == "",
+    )
+    c.check(
+        "没有投递窗口拒绝",
+        gate(
+            umo_kind_str="private",
+            is_primary=False,
+            primary_umo=None,
+            binding=None,
+            persona_id="小满",
+            settings=private_only,
+        )
+        != "",
+    )
+
+
 def main() -> int:
     checker = Checker()
     test_config_tools(checker)
@@ -550,6 +681,7 @@ def main() -> int:
     test_config_paths(checker)
     test_routine(checker)
     test_image_backends(checker)
+    test_injection_gate(checker)
 
     print(f"\n共 {checker.count} 项检查，失败 {len(checker.failures)} 项")
     if checker.failures:
