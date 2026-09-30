@@ -210,12 +210,15 @@ async def compose_image_prompt(
     art_style: str,
     style: str,
     language: str,
+    now_text: str = "",
 ) -> tuple[str, bool]:
     """静默生成完整出图提示词；返回 (提示词, raw_prompt)。
 
     提示词由本插件单次 LLM 后台静默生成（只输出提示词本身、单行），
     萌绘只负责画——成功时恒以 raw_prompt=True 传入（跳过萌绘的二次整理）；
     生成失败回退「日程活动原句 + 交由萌绘整理」，不阻断出图。
+    now_text：当前真实时间，写进指令让画面环境/光线与时刻一致
+    （凌晨不能画出白天的阳光，这是实测踩过的坑）。
     """
     instruction = prompts.build_image_compose_prompt(
         activity=activity,
@@ -224,6 +227,7 @@ async def compose_image_prompt(
         art_style=art_style,
         style=style,
         language=language,
+        now_text=now_text,
     )
     if instruction is None:
         return activity, False

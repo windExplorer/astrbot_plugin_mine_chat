@@ -661,6 +661,16 @@ def test_image_backends(c: Checker) -> None:
     )
     c.check("英文自然语言指令", "英文" in (en_prompt or ""))
     c.check("心情与碎片可选", "犯困" in (real_prompt or "") and "拿铁" not in (en_prompt or ""))
+    timed_prompt = compose(
+        activity="在床上睡觉", seed="", mood="困", art_style="anime", style="natural", language="zh",
+        now_text="2026-10-01 周四 04:46",
+    )
+    c.check("出图指令带真实时刻", timed_prompt is not None and "04:46" in (timed_prompt or ""))
+    c.check("出图指令强制环境光线一致", "光线" in (timed_prompt or "") and "绝不能" in (timed_prompt or ""))
+    no_time_prompt = compose(
+        activity="看书", seed="", mood="", art_style="anime", style="natural", language="zh",
+    )
+    c.check("不传时间不含时刻段", no_time_prompt is not None and "当前真实时刻" not in (no_time_prompt or ""))
 
 
 def test_channel_reason_codes(c: Checker) -> None:

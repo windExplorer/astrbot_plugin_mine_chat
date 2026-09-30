@@ -656,6 +656,7 @@ class ProactiveService:
                 art_style=settings.proactive_image_art_style,
                 style=settings.proactive_image_prompt_style,
                 language=settings.proactive_image_prompt_language,
+                now_text=datetime.now().strftime("%Y-%m-%d %H:%M"),
             )
             path = await fetch_anima_image(
                 self.context,

@@ -186,6 +186,7 @@ PROACTIVE_SYSTEM_TEMPLATE = """你现在是「{character_name}」。用户没有
 """
 
 PROACTIVE_USER_TEMPLATE = """【现在的时间】{now}
+（这是唯一的真实时间。你说的任何时间/时刻必须与它一致，严禁自己编造别的时间。）
 【你此刻的状态】{current_block}
 【可以顺口提的小事】{seed}
 【你们最近的对话】{recent_chat}
@@ -317,6 +318,7 @@ def build_image_compose_prompt(
     art_style: str,
     style: str,
     language: str,
+    now_text: str = "",
 ) -> str | None:
     """生成「出图提示词生成」的 LLM 指令；无可用场景事实时返回 None。
 
@@ -326,6 +328,8 @@ def build_image_compose_prompt(
     """
     activity = (activity or "").strip()
     facts_lines = [f"【此刻生活场景】{activity or '日常生活的一个随意瞬间'}"]
+    if (now_text or "").strip():
+        facts_lines.append(f"【当前真实时刻】{(now_text or '').strip()}——画面的环境、光线、天空必须与该时刻一致：深夜就是黑暗/夜灯/窗外夜色，绝不能出现阳光或白天的环境")
     if (seed or "").strip():
         facts_lines.append(f"【可分享细节】{(seed or '').strip()}")
     if (mood or "").strip():
