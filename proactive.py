@@ -481,6 +481,9 @@ class ProactiveService:
             await self._reschedule(persona_id)
             return False, "media_failed"
 
+        # 手动/force 发送撞上睡眠时段时的场景一致性：
+        # 角色是「刚被手机震醒」在发消息——文字要迷糊，图也要是刚醒的样子
+        asleep = is_sleeping(info.get("current"))
         try:
             texts = await self.composer.generate(
                 persona_id,
@@ -490,6 +493,7 @@ class ProactiveService:
                 seed=str(info.get("seed") or ""),
                 state=state,
                 image_plan=image_plan,
+                asleep=asleep,
             )
         except llm_mod.LLMError as exc:
             logger.warning("mine_chat: 主动消息生成失败 persona=%s: %s", persona_id, exc)
@@ -637,6 +641,10 @@ class ProactiveService:
                 return None, True, "无法构造出图事件（主窗口 umo 无效）"
             current = info.get("current") or info.get("previous") or {}
             activity = str(current.get("activity") or "").strip()
+            if is_sleeping(current):
+                # 睡眠时段被强叫醒：画「刚醒的迷糊」而不是沉睡——
+                # 沉睡画面与「刚被震醒发的消息」必然矛盾
+                activity = "刚从睡梦中被手机震醒，睡眼惺忪、头发微乱、迷糊朦胧的神态"
             seed = str(info.get("seed") or "").strip()
             final_prompt, raw_prompt = await compose_image_prompt(
                 self.context,

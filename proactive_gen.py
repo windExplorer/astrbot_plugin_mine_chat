@@ -526,6 +526,7 @@ class ProactiveComposer:
         seed: str,
         state: dict[str, Any],
         image_plan: dict[str, Any] | None = None,
+        asleep: bool = False,
     ) -> list[str]:
         settings: Settings = self._settings_getter()
         character_name = self.resolver.persona_display_name(persona_id)
@@ -575,6 +576,10 @@ class ProactiveComposer:
             recent_chat=recent_chat,
             last_proactive=last_proactive,
         )
+        if asleep:
+            # 手动强制发送撞上睡眠时段：把「被手机震醒」的场景说清楚，
+            # 否则模型会编出「吵醒你了？」这类与画面/逻辑矛盾的情节
+            prompt = f"{prompt}\n{prompts.SLEEPING_SEND_NOTE}"
 
         text = await llm_mod.chat_text(
             self.context,
