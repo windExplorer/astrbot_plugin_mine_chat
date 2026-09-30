@@ -4,6 +4,7 @@ import { createRouter, createWebHashHistory } from "vue-router";
 import App from "./App.vue";
 import OverviewView from "./views/OverviewView.vue";
 import PlanView from "./views/PlanView.vue";
+import WorldView from "./views/WorldView.vue";
 import ProactiveView from "./views/ProactiveView.vue";
 import ScopeView from "./views/ScopeView.vue";
 import ConfigView from "./views/ConfigView.vue";
@@ -17,6 +18,7 @@ const router = createRouter({
     { path: "/", redirect: "/overview" },
     { path: "/overview", name: "overview", component: OverviewView },
     { path: "/plan", name: "plan", component: PlanView },
+    { path: "/world", name: "world", component: WorldView },
     { path: "/proactive", name: "proactive", component: ProactiveView },
     { path: "/scope", name: "scope", component: ScopeView },
     { path: "/config", name: "config", component: ConfigView },

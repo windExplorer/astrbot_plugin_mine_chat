@@ -16,6 +16,7 @@ import {
 } from "naive-ui";
 
 import { apiOverview, apiProactiveNow, reasonText, type LogRow, type OverviewPayload } from "../api";
+import { usePoll } from "../usePoll";
 
 const message = useMessage();
 const loading = ref(false);
@@ -50,6 +51,8 @@ async function triggerNow() {
 }
 
 onMounted(load);
+// 后端主动消息/日程生成异步发生，页面可见时每 15 秒静默刷新
+usePoll(load, 15000);
 
 const plan = computed(() => data.value?.plan || ({} as any));
 const proactive = computed(() => data.value?.proactive || ({} as any));

@@ -72,6 +72,7 @@ $includeList = @(
     "proactive.py",
     "proactive_gen.py",
     "llm.py",
+    "kb.py",
     "prompts.py",
     "webui_api.py",
     "_conf_schema.json",

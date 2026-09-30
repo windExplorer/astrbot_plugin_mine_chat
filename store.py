@@ -52,6 +52,13 @@ _DDL: tuple[str, ...] = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS persona_kb (
+        persona_id TEXT PRIMARY KEY,
+        kb_name    TEXT NOT NULL DEFAULT '',
+        updated_at REAL NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS daily_plan (
         persona_id   TEXT NOT NULL,
         plan_date    TEXT NOT NULL,
@@ -215,6 +222,30 @@ class Store:
             "INSERT INTO meta(key, value) VALUES(?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
+        )
+
+    # ------------------------------------------------------------------ #
+    # persona_kb（人格 ↔ 知识库绑定，用于世界观提取）
+    # ------------------------------------------------------------------ #
+    async def get_persona_kb(self, persona_id: str) -> str | None:
+        """返回该人格绑定的知识库名；未绑定为 None，绑定为空串表示显式解绑。"""
+        rows = await self._run(
+            self._query_sync,
+            "SELECT kb_name FROM persona_kb WHERE persona_id=?",
+            (persona_id,),
+        )
+        if not rows:
+            return None
+        return str(rows[0]["kb_name"] or "")
+
+    async def set_persona_kb(self, persona_id: str, kb_name: str) -> None:
+        kb_name = str(kb_name or "").strip()
+        await self._run(
+            self._execute_sync,
+            "INSERT INTO persona_kb(persona_id, kb_name, updated_at) VALUES(?, ?, ?) "
+            "ON CONFLICT(persona_id) DO UPDATE SET "
+            "kb_name=excluded.kb_name, updated_at=excluded.updated_at",
+            (persona_id, kb_name, time.time()),
         )
 
     # ------------------------------------------------------------------ #

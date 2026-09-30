@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from astrbot.api import logger
 
+from . import kb as kb_mod
 from . import schedule_view as view_mod
 
 try:  # quart 是 AstrBot 的运行期依赖
@@ -625,7 +626,93 @@ def _bind(plugin, fn: Callable[[Any], Awaitable[dict]]) -> Callable[[], Awaitabl
     return handler
 
 
+async def h_world(plugin) -> dict:
+    """世界观设定页数据：手动配置 + 自动提取缓存 + 知识库绑定与候选。"""
+    persona_id = await _console_persona(plugin, _q("persona_id"))
+    if not persona_id:
+        return err("还没有可用人格（先和角色私聊一句，或到「人格与窗口」页设置）")
+    settings = plugin.settings()
+    auto = None
+    try:
+        cached = await plugin.store.get_meta(f"auto_profile:{persona_id}")
+        if cached:
+            data = json.loads(cached)
+            auto = {
+                "world": str(data.get("world") or ""),
+                "character": str(data.get("character") or ""),
+                "ts": float(data.get("ts") or 0.0),
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("mine_chat: 读取自动世界观缓存失败: %s", exc)
+    try:
+        kb_name = await plugin.store.get_persona_kb(persona_id)
+    except Exception:  # noqa: BLE001
+        kb_name = None
+    kb_options = await kb_mod.list_kb_names(plugin.context)
+    return ok(
+        {
+            "persona_id": persona_id,
+            "manual_world": settings.schedule_world,
+            "manual_character": settings.schedule_character,
+            "auto": auto,
+            "kb_name": kb_name,
+            "kb_options": kb_options,
+        }
+    )
+
+
+async def h_world_save(plugin) -> dict:
+    """保存手动世界观/角色补充设定（写入配置 schedule.world / schedule.character）。"""
+    body = await _payload()
+    persona_id = await _console_persona(plugin, str(body.get("persona_id") or ""))
+    if not persona_id:
+        return err("缺少 persona_id")
+    world = str(body.get("world") or "").strip()
+    character = str(body.get("character") or "").strip()
+    group = plugin.config.get("schedule")
+    if not isinstance(group, dict):
+        group = {}
+        plugin.config["schedule"] = group
+    group["world"] = world
+    group["character"] = character
+    try:
+        plugin.config.save_config()
+    except Exception as exc:  # noqa: BLE001
+        return err(f"配置已改内存但落盘失败: {exc}")
+    return ok({"world": world, "character": character})
+
+
+async def h_world_kb_save(plugin) -> dict:
+    """绑定/解绑人格的知识库（kb_name 传空 = 解绑）。"""
+    body = await _payload()
+    persona_id = await _console_persona(plugin, str(body.get("persona_id") or ""))
+    if not persona_id:
+        return err("缺少 persona_id")
+    kb_name = str(body.get("kb_name") or "").strip()
+    if kb_name:
+        options = await kb_mod.list_kb_names(plugin.context)
+        if kb_name not in options:
+            return err(f"知识库 {kb_name} 不存在或未加载")
+    await plugin.store.set_persona_kb(persona_id, kb_name)
+    plugin.schedule_service.invalidate_profile(persona_id)
+    return ok({"kb_name": kb_name})
+
+
+async def h_world_rebuild(plugin) -> dict:
+    """强制重新提炼世界观/角色设定（检索绑定知识库 + LLM，耗时可达数十秒）。"""
+    body = await _payload()
+    persona_id = await _console_persona(plugin, str(body.get("persona_id") or ""))
+    if not persona_id:
+        return err("缺少 persona_id")
+    world, character = await plugin.schedule_service.rebuild_profile(persona_id)
+    return ok({"world": world, "character": character})
+
+
 _ROUTES: list[tuple[str, Callable[..., Awaitable[dict]], list[str]]] = [
+    ("/world", h_world, ["GET"]),
+    ("/world/save", h_world_save, ["POST"]),
+    ("/world/kb/save", h_world_kb_save, ["POST"]),
+    ("/world/rebuild", h_world_rebuild, ["POST"]),
     ("/overview", h_overview, ["GET"]),
     ("/plan", h_plan, ["GET"]),
     ("/plan/refresh", h_plan_refresh, ["POST"]),

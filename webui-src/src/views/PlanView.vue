@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { usePoll } from "../usePoll";
 import {
   NAlert,
   NButton,
@@ -87,6 +88,10 @@ async function submitEdit() {
 }
 
 onMounted(load);
+// 日程可能在后台被生成/刷新；编辑弹窗打开时跳过轮询，避免打断编辑
+usePoll(() => {
+  if (!editing.value) return load();
+}, 20000);
 
 const nowMinute = computed(() => data.value?.now_minute ?? -1);
 const items = computed<PlanItem[]>(() => data.value?.items || []);

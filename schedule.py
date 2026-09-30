@@ -16,6 +16,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from . import kb as kb_mod
 from . import llm as llm_mod
 from . import prompts
 from .config import Settings, fmt_hhmm, parse_hhmm
@@ -476,57 +477,78 @@ class ScheduleService:
     _PROFILE_FAIL_TTL_SECONDS = 30 * 60.0
 
     async def _resolve_world_character(
-        self, persona_id: str, settings: Settings
+        self, persona_id: str, settings: Settings, *, force: bool = False
     ) -> tuple[str, str]:
-        """世界观/角色设定：配置 > 自动提取缓存 > 现场从人格提示词提炼。
+        """世界观/角色设定：配置 > 自动提取缓存 > 现场从人格提示词（+绑定知识库）提炼。
 
         用户没填配置时，用 LLM 从人格系统提示词提炼一份并缓存（meta 表，
-        7 天刷新），避免「没填就退化成泛化普通人生活」。提取失败只在内存里
-        记 30 分钟，之后有机会重试，但不写库（不把失败固化）。
+        7 天刷新）。若该人格绑定了知识库，检索相关资料一并作为提炼依据。
+        force=True（控制台「重新提取」）跳过全部缓存，生成后覆盖缓存。
+        提取失败只在内存里记 30 分钟，之后有机会重试，但不写库（不把失败固化）。
         """
         world = settings.schedule_world.strip()
         character = settings.schedule_character.strip()
         if world or character:
             return world, character
 
-        memo = self._profile_memo.get(persona_id)
-        if memo:
-            ts, memo_world, memo_character = memo
-            ttl = (
-                self._PROFILE_TTL_SECONDS
-                if (memo_world or memo_character)
-                else self._PROFILE_FAIL_TTL_SECONDS
-            )
-            if time.time() - ts < ttl:
-                return memo_world, memo_character
-
-        key = f"auto_profile:{persona_id}"
-        try:
-            cached = await self.store.get_meta(key)
-        except Exception:  # noqa: BLE001
-            cached = None
-        if cached:
-            try:
-                data = json.loads(cached)
-                ts = float(data.get("ts") or 0.0)
-                if time.time() - ts < self._PROFILE_TTL_SECONDS:
-                    memo_world = str(data.get("world") or "")
-                    memo_character = str(data.get("character") or "")
-                    self._profile_memo[persona_id] = (ts, memo_world, memo_character)
+        if not force:
+            memo = self._profile_memo.get(persona_id)
+            if memo:
+                ts, memo_world, memo_character = memo
+                ttl = (
+                    self._PROFILE_TTL_SECONDS
+                    if (memo_world or memo_character)
+                    else self._PROFILE_FAIL_TTL_SECONDS
+                )
+                if time.time() - ts < ttl:
                     return memo_world, memo_character
-            except (ValueError, TypeError):
-                pass
+
+            key = f"auto_profile:{persona_id}"
+            try:
+                cached = await self.store.get_meta(key)
+            except Exception:  # noqa: BLE001
+                cached = None
+            if cached:
+                try:
+                    data = json.loads(cached)
+                    ts = float(data.get("ts") or 0.0)
+                    if time.time() - ts < self._PROFILE_TTL_SECONDS:
+                        memo_world = str(data.get("world") or "")
+                        memo_character = str(data.get("character") or "")
+                        self._profile_memo[persona_id] = (ts, memo_world, memo_character)
+                        return memo_world, memo_character
+                except (ValueError, TypeError):
+                    pass
 
         persona_prompt = await self.resolver.persona_prompt(persona_id)
         if not persona_prompt.strip():
             self._profile_memo[persona_id] = (time.time(), "", "")
             return "", ""
+
+        kb_context = ""
+        try:
+            kb_name = await self.store.get_persona_kb(persona_id)
+        except Exception:  # noqa: BLE001
+            kb_name = None
+        if kb_name:
+            kb_context = await kb_mod.retrieve_kb(
+                self.context, kb_name, persona_prompt[:300]
+            )
+            if kb_context:
+                logger.info(
+                    "mine_chat: 已检索知识库 %s 辅助世界观提取 persona=%s（%d 字）",
+                    kb_name,
+                    persona_id,
+                    len(kb_context),
+                )
         try:
             text = await llm_mod.chat_text(
                 self.context,
                 model_id=settings.schedule_model,
                 system_prompt="你是一位角色设定整理师，只输出被要求格式的内容。",
-                prompt=prompts.build_profile_extract_prompt(persona_prompt[:3000]),
+                prompt=prompts.build_profile_extract_prompt(
+                    persona_prompt[:3000], kb_context
+                ),
                 temperature=0.4,
                 timeout=90.0,
             )
@@ -543,7 +565,7 @@ class ScheduleService:
         if not world and not character:
             logger.warning(
                 "mine_chat: 自动提取世界观为空 persona=%s（人格提示词可能不含设定信息），"
-                "建议在配置页手动填写「世界观 / 角色补充设定」",
+                "建议在控制台「世界观」页手动填写或绑定知识库",
                 persona_id,
             )
             self._profile_memo[persona_id] = (time.time(), "", "")
@@ -551,7 +573,7 @@ class ScheduleService:
         now_ts = time.time()
         try:
             await self.store.set_meta(
-                key,
+                f"auto_profile:{persona_id}",
                 json.dumps(
                     {"world": world, "character": character, "ts": now_ts},
                     ensure_ascii=False,
@@ -568,6 +590,19 @@ class ScheduleService:
             len(character),
         )
         return world, character
+
+    async def rebuild_profile(self, persona_id: str) -> tuple[str, str]:
+        """控制台「重新提取」：强制重新生成世界观/角色设定并覆盖缓存。"""
+        settings = self._settings_getter()
+        self._profile_memo.pop(persona_id, None)
+        world, character = await self._resolve_world_character(
+            persona_id, settings, force=True
+        )
+        return world, character
+
+    def invalidate_profile(self, persona_id: str) -> None:
+        """清掉内存里的提取缓存（换绑知识库后让下次生成走重新提炼）。"""
+        self._profile_memo.pop(persona_id, None)
 
     async def _build_prompt(
         self,

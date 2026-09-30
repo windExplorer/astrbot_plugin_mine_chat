@@ -24,6 +24,7 @@ const isDark = ref(false);
 const menuOptions: MenuOption[] = [
   { label: "总览", key: "overview" },
   { label: "日程", key: "plan" },
+  { label: "世界观", key: "world" },
   { label: "主动消息", key: "proactive" },
   { label: "人格与窗口", key: "scope" },
   { label: "配置", key: "config" },

@@ -37,6 +37,7 @@ _RELOAD_MODULES = (
     "config",
     "store",
     "llm",
+    "kb",
     "prompts",
     "scope",
     "schedule",

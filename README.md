@@ -114,7 +114,7 @@ AstrBot 插件页 **萌萌日程**（`pages/schedule-console/`）：
 ## 数据
 
 - 位置：`data/plugin_data/astrbot_plugin_mine_chat/mine_chat.db`（SQLite，WAL）。
-- 表：`persona_state` / `window_binding` / `daily_plan` / `plan_item` / `proactive_state` / `proactive_log` / `meta`。
+- 表：`persona_state` / `window_binding` / `persona_kb` / `daily_plan` / `plan_item` / `proactive_state` / `proactive_log` / `meta`。
 - 所有状态按 `persona_id` 归档；换插件版本不会丢（不放在插件安装目录）。
 
 ## 安装

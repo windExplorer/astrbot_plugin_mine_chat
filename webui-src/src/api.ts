@@ -350,6 +350,44 @@ export function apiConfig() {
   return apiGet<ConfigPayload>("/config");
 }
 
+// ---------------------------------------------------------------- 世界观设定
+export interface AutoProfile {
+  world: string;
+  character: string;
+  ts: number;
+}
+
+export interface WorldPayload {
+  persona_id: string;
+  manual_world: string;
+  manual_character: string;
+  auto: AutoProfile | null;
+  kb_name: string | null;
+  kb_options: string[];
+}
+
+/** 世界观设定页数据（手动配置 + 自动提取缓存 + 知识库绑定与候选）。 */
+export function apiWorld(personaId = "") {
+  const p = new URLSearchParams();
+  if (personaId) p.set("persona_id", personaId);
+  return apiGet<WorldPayload>(`/world?${p.toString()}`);
+}
+
+/** 保存手动世界观/角色补充设定（写入配置，优先级高于自动提取）。 */
+export function apiWorldSave(world: string, character: string, timeoutMs = 30000) {
+  return apiPost<{ world: string; character: string }>("/world/save", { world, character }, timeoutMs);
+}
+
+/** 绑定/解绑人格的知识库（空串 = 解绑）。换绑后自动提取会重新提炼。 */
+export function apiWorldKbSave(kbName: string, timeoutMs = 30000) {
+  return apiPost<{ kb_name: string }>("/world/kb/save", { kb_name: kbName }, timeoutMs);
+}
+
+/** 强制重新提炼（检索绑定知识库 + LLM，耗时可达数十秒）。 */
+export function apiWorldRebuild(timeoutMs = 180000) {
+  return apiPost<{ world: string; character: string }>("/world/rebuild", {}, timeoutMs);
+}
+
 /** AstrBot 已加载的对话模型列表（模型选择下拉的数据源）。 */
 export function apiProviders() {
   return apiGet<{ items: ProviderOption[]; default_id: string }>("/providers");
