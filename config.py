@@ -10,11 +10,31 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 _TIME_RE = re.compile(r"^\s*(\d{1,2})\s*[:：]\s*(\d{1,2})")
+
+_logger = logging.getLogger("mine_chat.config")
+_key_divergence_warned: set[str] = set()
+
+
+def _warn_key_divergence(legacy_key: str, legacy: Any, nested_key: str, nested: Any) -> None:
+    """平铺键与嵌套键并存且值不一致时告警（同一键对只告警一次，防每条消息刷屏）。"""
+    pair = f"{legacy_key}|{nested_key}"
+    if pair in _key_divergence_warned:
+        return
+    _key_divergence_warned.add(pair)
+    _logger.warning(
+        "mine_chat: 配置键 %s=%r 与嵌套 %s=%r 不一致，实际生效的是嵌套值——"
+        "请到插件配置页核对（多半是手改配置文件时改到了顶层旧键）",
+        legacy_key,
+        legacy,
+        nested_key,
+        nested,
+    )
 
 
 def to_bool(value: Any, default: bool = False) -> bool:
@@ -220,6 +240,12 @@ class Settings:
             """优先取嵌套组内键；为 None 时回退 v1.0.x 的平铺键。"""
             value = group.get(group_key)
             if value is not None:
+                legacy = get(legacy_key)
+                if legacy is not None and legacy != value:
+                    # 只在控制台/AstrBot 配置页之外的途径（如手改配置文件）改到
+                    # 平铺键时会出现：两处并存且不一致，实际生效的是嵌套值，
+                    # 不提示的话用户会以为自己的修改没保存。
+                    _warn_key_divergence(legacy_key, legacy, group_key, value)
                 return value
             value = get(legacy_key)
             return default if value is None else value

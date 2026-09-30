@@ -542,13 +542,11 @@ def test_image_backends(c: Checker) -> None:
 
     # 跨插件取图：moe_meme 装了/没装/停用/旧版本/API 抛异常
     class _Inst:
-        def __init__(self, path="/tmp/s.png", fail=False, with_api=True):
-            self.path, self.fail, self.with_api = path, fail, with_api
+        def __init__(self, path="/tmp/s.png", fail=False):
+            self.path, self.fail = path, fail
             self.args = None
 
         async def api_random_sticker_path(self, character=""):
-            if not self.with_api:
-                raise AttributeError
             self.args = character
             if self.fail:
                 raise RuntimeError("boom")
@@ -567,31 +565,27 @@ def test_image_backends(c: Checker) -> None:
                 raise RuntimeError("host changed")
             return self.meta
 
-    c.equal(
-        "跨插件取图：命中返回路径",
-        asyncio.run(via_plugin(_Ctx(_Meta(_Inst())))),
-        "/tmp/s.png",
-    )
+    def _run(ctx):
+        return asyncio.run(via_plugin(ctx))
+
+    path, note, no_api = _run(_Ctx(_Meta(_Inst())))
+    c.equal("跨插件取图：命中返回路径", path, "/tmp/s.png")
+    c.check("命中时说明为空", note == "" and no_api is False)
     inst = _Inst()
-    asyncio.run(via_plugin(_Ctx(_Meta(inst))))
+    _run(_Ctx(_Meta(inst)))
     c.equal("跨插件取图默认全库随机（character 空串）", inst.args, "")
-    c.check("未安装 moe_meme 返回 None", asyncio.run(via_plugin(_Ctx(None))) is None)
-    c.check(
-        "插件停用返回 None",
-        asyncio.run(via_plugin(_Ctx(_Meta(_Inst(), activated=False)))) is None,
-    )
-    c.check(
-        "旧版本无 API 返回 None",
-        asyncio.run(via_plugin(_Ctx(_Meta(_Inst(with_api=False))))) is None,
-    )
-    c.check(
-        "API 抛异常返回 None（交兜底）",
-        asyncio.run(via_plugin(_Ctx(_Meta(_Inst(fail=True))))) is None,
-    )
-    c.check(
-        "宿主接口异常返回 None",
-        asyncio.run(via_plugin(_Ctx(_Meta(_Inst()), boom=True))) is None,
-    )
+    path, note, no_api = _run(_Ctx(None))
+    c.check("未安装：路径空 + 标记不可用", path is None and no_api and "未安装" in note)
+    path, note, no_api = _run(_Ctx(_Meta(_Inst(), activated=False)))
+    c.check("插件停用：标记不可用", path is None and no_api and "停用" in note)
+    path, note, no_api = _run(_Ctx(_Meta(type("_NoApi", (), {})())))
+    c.check("旧版本无 API：标记不可用", path is None and no_api and "v0.2.0" in note)
+    path, note, no_api = _run(_Ctx(_Meta(_Inst(fail=True))))
+    c.check("API 抛异常：不算不可用，说明带异常", path is None and not no_api and "boom" in note)
+    path, note, no_api = _run(_Ctx(_Meta(_Inst(path=""))))
+    c.check("API 返回空：不算不可用", path is None and not no_api and "返回空" in note)
+    path, note, no_api = _run(_Ctx(_Meta(_Inst()), boom=True))
+    c.check("宿主接口异常：不算不可用", path is None and not no_api)
 
     ok_payload = json.dumps({"status": "ok", "image_paths": ["/tmp/a.png"]})
     c.equal("companion JSON 取路径", parse_anima_result(ok_payload), "/tmp/a.png")

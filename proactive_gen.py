@@ -14,6 +14,7 @@ import json
 import os
 import random
 import re
+import time
 from datetime import datetime
 from typing import Any
 
@@ -98,6 +99,68 @@ def parse_anima_result(result: Any) -> str | None:
         if isinstance(path, str) and path.strip():
             return path.strip()
     return None
+
+
+def make_stub_event(umo: str) -> Any:
+    """为 anima 伴侣出图构造轻量事件（AstrMessageEvent 子类，绝不发送）。
+
+    动机：机器人主动配图是「角色想给用户看自己的生活」，不该要求用户先发过
+    一条消息。anima 的 comfyui_draw 在 source=伴侣标记时跳过白名单/闸门/
+    已读回执/主动发图，对 event 的实际依赖只有 session_id（记录 key）与
+    message_str（尺寸比例识别，空则回落提示词）——所以用主窗口 umo 伪造
+    一个极简事件即可。构造失败返回 None，调用方维持原有跳过逻辑。
+    """
+    try:
+        from astrbot.core.platform.astr_message_event import AstrMessageEvent
+        from astrbot.core.platform.message_session import MessageSession
+
+        class _StubDrawEvent(AstrMessageEvent):
+            def __init__(self, umo_: str):
+                self.session = MessageSession.from_str(umo_)
+                self.message_str = ""
+                self.role = "member"
+                self.is_wake = False
+                self.is_at_or_wake_command = False
+                self._extras: dict[str, Any] = {}
+                self._force_stopped = False
+                self._result = None
+                self.created_at = time.time()
+
+            # —— 平台相关取值全部兜底为空：伴侣路径用不到，也杜绝误发/误贴 ——
+            def get_platform_id(self):
+                return ""
+
+            def get_platform_name(self):
+                return ""
+
+            def get_sender_id(self):
+                return ""
+
+            def get_sender_name(self):
+                return ""
+
+            def get_group_id(self):
+                return ""
+
+            def get_self_id(self):
+                return ""
+
+            def get_message_outline(self):
+                return ""
+
+            def is_private_chat(self):
+                return True
+
+            def is_admin(self):
+                return False
+
+            async def send(self, *args, **kwargs):
+                return None
+
+        return _StubDrawEvent(umo)
+    except Exception as exc:  # noqa: BLE001 - 宿主结构变化时维持旧行为
+        logger.warning("mine_chat: 构造出图伪事件失败: %s", exc)
+        return None
 
 
 def _resolve_draw_handler(context: Any):
@@ -229,28 +292,37 @@ def meme_cache_filename(sticker_id: str, fmt: str) -> str:
     return f"{safe}.{ext}"
 
 
-async def fetch_meme_image_via_plugin(context: Any) -> str | None:
+async def fetch_meme_image_via_plugin(context: Any) -> tuple[str | None, str, bool]:
     """优先走萌萌表情包插件的跨插件 API 拿本地缓存图（moe_meme v0.2.0+）。
 
-    插件没暴露这个 API 时返回 None（而不是异常），调用方回退直连：
+    返回 (本地路径 | None, 失败说明, 是否「moe_meme 不可用」)。
+    失败说明写进裁决日志的内容列，用户才能区分「没装插件」和「拉取失败」。
     token、缓存目录、去重都由 moe_meme 自己管——联动是「调用」而不是
     「复刻它的数据源」，站方凭据只应该在它那里配一份。
     """
     try:
         meta = context.get_registered_star("astrbot_plugin_moe_meme")
-    except Exception:  # noqa: BLE001 - 宿主接口变动时按「不可用」处理
-        return None
-    if meta is None or not getattr(meta, "activated", False):
-        return None
+    except Exception as exc:  # noqa: BLE001 - 宿主接口变动时按「不可用」处理
+        return None, f"宿主接口异常：{exc}", False
+    if meta is None:
+        return None, "未安装 astrbot_plugin_moe_meme", True
+    if not getattr(meta, "activated", False):
+        return None, "astrbot_plugin_moe_meme 已安装但处于停用状态", True
     fn = getattr(getattr(meta, "star_cls", None), "api_random_sticker_path", None)
     if not callable(fn):
-        return None
+        return None, "astrbot_plugin_moe_meme 版本低于 v0.2.0（无跨插件 API）", True
     try:
         path = await asyncio.wait_for(fn(), timeout=60.0)
     except Exception as exc:  # noqa: BLE001 - API 失败交由调用方兜底
         logger.info("mine_chat: 萌萌表情包跨插件取图失败: %s", exc)
-        return None
-    return str(path) if path else None
+        return None, f"跨插件调用失败：{exc}", False
+    if not path:
+        return (
+            None,
+            "moe_meme 返回空（其数据源拉取失败或缓存目录不可用，看 moe_meme 日志）",
+            False,
+        )
+    return str(path), "", False
 
 
 async def fetch_meme_image(token: str, cache_dir: str) -> str | None:

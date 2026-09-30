@@ -529,7 +529,8 @@ class MineChatPlugin(Star):
             "sticker_off": "表情未开启或概率为 0",
             "sticker_dice": "表情掷骰未命中",
             "sticker_limit": "今日表情已达上限",
-            "sticker_fail": "表情拉取失败（未装 moe_meme 或网络失败）",
+            "sticker_fail": "表情拉取失败（原因见内容列）",
+            "sticker_no_api": "萌萌表情包不可用（未装/停用/版本低于 v0.2.0）",
             "sticker_yield": "表情让位给了配图（一条消息只带一张图）",
         }
         return mapping.get(reason, reason)

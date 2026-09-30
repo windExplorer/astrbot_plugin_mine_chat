@@ -29,6 +29,7 @@ from .proactive_gen import (
     fetch_meme_image_via_plugin,
     image_desc_from_path,
     list_image_files,
+    make_stub_event,
 )
 from .schedule_view import is_sleeping, locate, now_minutes_for
 
@@ -562,9 +563,17 @@ class ProactiveService:
         if backend == "anima":
             event = self._last_event
             if event is None:
+                # 主动出图不该要求「用户先发过消息」：没有真实事件时用主窗口
+                # umo 伪造一个轻量事件（anima 伴侣路径只用它记 session）。
+                umo0 = str(info.get("umo") or "")
+                event = make_stub_event(umo0) if umo0 else None
+                if event is not None:
+                    logger.info(
+                        "mine_chat: 无真实用户事件，用主窗口伪事件出图 umo=%s", umo0
+                    )
+            if event is None:
                 self._warn_image(
-                    "生图方式为 ComfyUI萌绘，但还没有任何用户消息事件可复用——"
-                    "先和角色聊一句再开启生图"
+                    "生图方式为 ComfyUI萌绘，但主窗口 umo 无效，无法构造出图事件"
                 )
                 await self._record(persona_id, "img", "img_no_event", umo, throttle=True)
                 return None
@@ -643,16 +652,24 @@ class ProactiveService:
             await self._record(persona_id, "sticker", "sticker_limit", "", throttle=True)
             return None
 
-        path = await fetch_meme_image_via_plugin(self.context)
+        path, note, no_api = await fetch_meme_image_via_plugin(self.context)
         if path is None:
             # 跨插件 API 不可用（moe_meme 未安装/未激活/v0.2.0 以下）才走直连兜底
-            path = await fetch_meme_image(
+            direct = await fetch_meme_image(
                 settings.proactive_sticker_token, self._meme_cache_dir
             )
+            if direct:
+                path = direct
         if not path:
-            # 两条路径失败都只 info 级日志；这里落一条可见的裁决，
-            # 用户才知道表情通道其实失败了。
-            await self._record(persona_id, "sticker", "sticker_fail", "", throttle=True)
+            # 落一条可见的裁决并带上具体原因：用户要能区分「插件不可用」与「拉取失败」
+            await self._record(
+                persona_id,
+                "sticker",
+                "sticker_no_api" if no_api else "sticker_fail",
+                "",
+                content=note,
+                throttle=True,
+            )
             return None
         await self._record(
             persona_id, "sticker", "sticker_ok", "", content=os.path.basename(path)
