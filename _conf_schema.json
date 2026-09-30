@@ -322,6 +322,20 @@
         "labels": ["中文", "英文"],
         "default": "zh"
       },
+      "image_art_style": {
+        "description": "绘图画风",
+        "hint": "仅 anima 方式有效：anime = 二次元动漫插画（推荐配 Danbooru 标签 + 英文）；realistic = 真人写实摄影（推荐配自然语言 + 中文）。画风要素会写进出图提示词。",
+        "type": "string",
+        "options": ["anime", "realistic"],
+        "labels": ["动漫", "真人写实"],
+        "default": "anime"
+      },
+      "image_negative_prompt": {
+        "description": "负向提示词",
+        "hint": "仅 anima 方式有效：透传给萌绘的负向提示词（不想出现的内容）。留空 = 不传。",
+        "type": "text",
+        "default": ""
+      },
       "image_dir": {
         "description": "本地图库目录",
         "hint": "仅本地图库方式有效：存放候选图片的文件夹绝对路径，支持 jpg / jpeg / png / webp / gif。留空 = 使用插件数据目录下的 images 文件夹。文件名（去掉扩展名）会作为画面线索告诉模型。",

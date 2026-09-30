@@ -185,6 +185,8 @@ class Settings:
     proactive_image_workflow: str = ""
     proactive_image_prompt_style: str = "natural"
     proactive_image_prompt_language: str = "zh"
+    proactive_image_art_style: str = "anime"
+    proactive_image_negative_prompt: str = ""
     proactive_image_probability: float = 0.25
     proactive_image_max_per_day: int = 2
 
@@ -394,6 +396,23 @@ class Settings:
                     "zh",
                 ),
                 "zh",
+            ),
+            proactive_image_art_style=to_str(
+                pick(
+                    proactive,
+                    "image_art_style",
+                    "proactive_image_art_style",
+                    "anime",
+                ),
+                "anime",
+            ),
+            proactive_image_negative_prompt=to_str(
+                pick(
+                    proactive,
+                    "image_negative_prompt",
+                    "proactive_image_negative_prompt",
+                    "",
+                )
             ),
             proactive_image_probability=to_float(
                 pick(proactive, "image_probability", "proactive_image_probability", 0.25),

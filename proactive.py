@@ -22,11 +22,11 @@ from .config import Settings
 from .proactive_gen import (
     ProactiveComposer,
     choose_image_file,
+    compose_image_prompt,
     fetch_anima_image,
     fetch_meme_image,
     image_desc_from_path,
     list_image_files,
-    rewrite_image_prompt,
 )
 from .schedule_view import is_sleeping, locate, now_minutes_for
 
@@ -538,14 +538,14 @@ class ProactiveService:
             current = info.get("current") or info.get("previous") or {}
             activity = str(current.get("activity") or "").strip()
             seed = str(info.get("seed") or "").strip()
-            prompt = activity or "日常生活的一个随意瞬间"
-            if seed and seed not in prompt:
-                prompt = f"{prompt}，{seed}"
-            final_prompt, raw_prompt = await rewrite_image_prompt(
+            final_prompt, raw_prompt = await compose_image_prompt(
                 self.context,
                 umo=str(info.get("umo") or "") or None,
                 model_id=settings.proactive_model,
-                text=prompt,
+                activity=activity,
+                seed=seed,
+                mood=str(current.get("mood") or "").strip(),
+                art_style=settings.proactive_image_art_style,
                 style=settings.proactive_image_prompt_style,
                 language=settings.proactive_image_prompt_language,
             )
@@ -555,6 +555,7 @@ class ProactiveService:
                 prompt=final_prompt,
                 workflow=settings.proactive_image_workflow,
                 raw_prompt=raw_prompt,
+                negative_prompt=settings.proactive_image_negative_prompt,
             )
             if not path:
                 return None

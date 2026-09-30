@@ -547,16 +547,36 @@ def test_image_backends(c: Checker) -> None:
     c.equal("空 id 兜底", meme_cache_filename("", "png"), "sticker.png")
     c.equal("点开头扩展名", meme_cache_filename("id", ".gif"), "id.gif")
 
-    # 绘图提示词语种 / 类型改写
+    # 绘图提示词生成（静默，含画风与语种/类型约束）
     import prompts as prompts_mod
 
-    rewrite = prompts_mod.build_prompt_rewrite
-    tags = rewrite("在图书馆靠窗的位置看书", "danbooru", "zh")
-    c.check("标签模式生成改写指令", tags is not None and "Danbooru" in tags and "图书馆" in tags)
-    en = rewrite("在图书馆看书", "natural", "en")
-    c.check("英文自然语言生成翻译指令", en is not None and "英文" in en and "在图书馆看书" in en)
-    c.check("中文自然语言无需改写", rewrite("在看书", "natural", "zh") is None)
-    c.check("空描述不改写", rewrite("  ", "danbooru", "en") is None)
+    compose = prompts_mod.build_image_compose_prompt
+    tags_prompt = compose(
+        activity="在图书馆靠窗的位置看书",
+        seed="那家店的拿铁太甜了",
+        mood="专注",
+        art_style="anime",
+        style="danbooru",
+        language="zh",
+    )
+    c.check("danbooru 指令含标签要求", tags_prompt is not None and "Danbooru" in tags_prompt)
+    c.check("danbooru 指令含动漫画风", "anime style" in (tags_prompt or ""))
+    c.check("场景事实已注入", "图书馆" in (tags_prompt or "") and "拿铁" in (tags_prompt or ""))
+    real_prompt = compose(
+        activity="在公司开周会",
+        seed="",
+        mood="犯困",
+        art_style="realistic",
+        style="natural",
+        language="zh",
+    )
+    c.check("真人画风指令含写实要求", "photorealistic" in (real_prompt or ""))
+    c.check("真人默认中文", "中文" in (real_prompt or ""))
+    en_prompt = compose(
+        activity="看书", seed="", mood="", art_style="anime", style="natural", language="en"
+    )
+    c.check("英文自然语言指令", "英文" in (en_prompt or ""))
+    c.check("心情与碎片可选", "犯困" in (real_prompt or "") and "拿铁" not in (en_prompt or ""))
 
 
 def test_injection_gate(c: Checker) -> None:

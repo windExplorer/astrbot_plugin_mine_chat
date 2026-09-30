@@ -213,35 +213,86 @@ def build_proactive_user(
 
 
 # --------------------------------------------------------------------------- #
-# 生图画面描述的语种/类型改写
+# 生图提示词生成（静默）：由本插件产出最终提示词，萌绘只负责画
 # --------------------------------------------------------------------------- #
-PROMPT_TRANSLATE_EN = """把下面这句中文画面描述翻译成一句简洁自然的英文描述。
-只输出译文本身，不要解释、不要引号。
+_IMAGE_ART_TEXT = {
+    "anime": "二次元动漫插画风格（anime style）",
+    "realistic": "真人写实摄影风格（photorealistic, realistic）",
+}
+_IMAGE_ART_TAGS = {
+    "anime": "anime style, best quality, amazing quality",
+    "realistic": "photorealistic, realistic, masterpiece, best quality",
+}
 
-中文描述：{text}"""
+PROMPT_COMPOSE_TAGS = """根据下面的生活场景事实，写一行英文 Danbooru 标签形式的绘图提示词。
+要求：
+- 逗号分隔的小写标签短语，包含人物、动作、场景、时间氛围与情绪要素
+- 画风：{art_style_text}；画质词用：{quality_tags}
+- 只输出这一行标签本身，不要解释、不要句号、不要 markdown
 
-PROMPT_TO_TAGS = """把下面这句中文画面描述改写成一行英文 Danbooru 标签。
-要求：逗号分隔的小写标签短语，保留人物、动作、场景、情绪与画面要素；
-不要句号，不要解释，不要 markdown 代码块。
+{facts}"""
 
-中文描述：{text}"""
+PROMPT_COMPOSE_NATURAL = """根据下面的生活场景事实，写一段绘图提示词。
+要求：
+- 用{language_word}写一段连贯的画面描述，包含人物、动作、场景、时间氛围与情绪
+- 画风：{art_style_text}
+- 只输出提示词本身，单行，不要解释、不要引号
+
+{facts}"""
 
 
-def build_prompt_rewrite(text: str, style: str, language: str) -> str | None:
-    """按目标「类型 / 语种」生成画面描述改写提示词；无需改写返回 None。
+def image_art_text(art_style: str) -> str:
+    return _IMAGE_ART_TEXT.get(
+        (art_style or "").strip().lower(), _IMAGE_ART_TEXT["anime"]
+    )
 
-    - style=danbooru：改写为英文 Danbooru 标签（标签固定英文，语种忽略）；
-    - style=natural 且 language=en：翻译成英文句子；
-    - style=natural 且 language=zh：原样交给萌绘整理，不需要改写。
+
+def image_art_quality_tags(art_style: str) -> str:
+    return _IMAGE_ART_TAGS.get(
+        (art_style or "").strip().lower(), _IMAGE_ART_TAGS["anime"]
+    )
+
+
+def build_image_compose_prompt(
+    *,
+    activity: str,
+    seed: str,
+    mood: str,
+    art_style: str,
+    style: str,
+    language: str,
+) -> str | None:
+    """生成「出图提示词生成」的 LLM 指令；无可用场景事实时返回 None。
+
+    提示词形态由 style（danbooru 标签 / natural 自然语言）与 language（zh/en）
+    决定，画风（anime/realistic）作为硬要素写进指令——参考 moe_star_whisper
+    的 D6 语义：动漫工作流配英文标签、真人工作流配中文自然语言。
     """
-    text = (text or "").strip()
-    if not text:
-        return None
-    if style == "danbooru":
-        return fill(PROMPT_TO_TAGS, {"text": text})
-    if language == "en":
-        return fill(PROMPT_TRANSLATE_EN, {"text": text})
-    return None
+    activity = (activity or "").strip()
+    facts_lines = [f"【此刻生活场景】{activity or '日常生活的一个随意瞬间'}"]
+    if (seed or "").strip():
+        facts_lines.append(f"【可分享细节】{(seed or '').strip()}")
+    if (mood or "").strip():
+        facts_lines.append(f"【当前心情】{(mood or '').strip()}")
+    facts = "\n".join(facts_lines)
+
+    if (style or "").strip().lower() == "danbooru":
+        return fill(
+            PROMPT_COMPOSE_TAGS,
+            {
+                "art_style_text": image_art_text(art_style),
+                "quality_tags": image_art_quality_tags(art_style),
+                "facts": facts,
+            },
+        )
+    return fill(
+        PROMPT_COMPOSE_NATURAL,
+        {
+            "art_style_text": image_art_text(art_style),
+            "language_word": "英文" if (language or "").strip().lower() == "en" else "中文",
+            "facts": facts,
+        },
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -122,43 +122,61 @@ def _resolve_draw_handler(context: Any):
     return handler if callable(handler) else None
 
 
-async def rewrite_image_prompt(
+async def compose_image_prompt(
     context: Any,
     *,
     umo: str | None,
     model_id: str,
-    text: str,
+    activity: str,
+    seed: str,
+    mood: str,
+    art_style: str,
     style: str,
     language: str,
 ) -> tuple[str, bool]:
-    """把中文画面描述按配置的「类型 / 语种」改写；返回 (最终描述, raw_prompt)。
+    """静默生成完整出图提示词；返回 (提示词, raw_prompt)。
 
-    raw_prompt=True 表示描述已是最终形态（英文 Danbooru 标签），
-    传给 anima 时让它跳过二次整理；改写失败回退中文原文（交由萌绘整理）。
+    提示词由本插件单次 LLM 后台静默生成（只输出提示词本身、单行），
+    萌绘只负责画——成功时恒以 raw_prompt=True 传入（跳过萌绘的二次整理）；
+    生成失败回退「日程活动原句 + 交由萌绘整理」，不阻断出图。
     """
-    instruction = prompts.build_prompt_rewrite(text, style, language)
+    instruction = prompts.build_image_compose_prompt(
+        activity=activity,
+        seed=seed,
+        mood=mood,
+        art_style=art_style,
+        style=style,
+        language=language,
+    )
     if instruction is None:
-        return text, False
+        return activity, False
     try:
-        rewritten = await llm_mod.chat_text(
+        composed = await llm_mod.chat_text(
             context,
             umo=umo,
             model_id=model_id,
-            system_prompt="你是画面提示词改写助手，只输出结果本身。",
+            system_prompt="你是绘图提示词生成助手，只输出提示词本身，单行。",
             prompt=instruction,
-            temperature=0.3,
+            temperature=0.8,
         )
     except llm_mod.LLMError as exc:  # noqa: BLE001
-        logger.warning("mine_chat: 画面描述改写失败，回退中文原文: %s", exc)
-        return text, False
-    rewritten = rewritten.strip().strip('"').strip()
-    if not rewritten:
-        return text, False
-    return rewritten, style == "danbooru"
+        logger.warning("mine_chat: 出图提示词生成失败，回退日程原句: %s", exc)
+        return activity, False
+    composed = composed.strip().strip('"').strip()
+    if not composed:
+        logger.warning("mine_chat: 出图提示词生成为空，回退日程原句")
+        return activity, False
+    return composed, True
 
 
 async def fetch_anima_image(
-    context: Any, event: Any, *, prompt: str, workflow: str = "", raw_prompt: bool = False
+    context: Any,
+    event: Any,
+    *,
+    prompt: str,
+    workflow: str = "",
+    raw_prompt: bool = False,
+    negative_prompt: str = "",
 ) -> str | None:
     """联动 ComfyUI萌绘出一张图，返回服务器本地文件路径（失败返回 None）。
 
@@ -178,6 +196,8 @@ async def fetch_anima_image(
         kwargs["workflow"] = workflow.strip()
     if raw_prompt:
         kwargs["raw_prompt"] = True
+    if negative_prompt.strip():
+        kwargs["negative_prompt"] = negative_prompt.strip()
     try:
         result = await asyncio.wait_for(handler(event, **kwargs), timeout=ANIMA_DRAW_TIMEOUT)
     except asyncio.TimeoutError:
