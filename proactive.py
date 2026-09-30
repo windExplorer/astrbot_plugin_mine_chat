@@ -26,6 +26,7 @@ from .proactive_gen import (
     fetch_meme_image,
     image_desc_from_path,
     list_image_files,
+    rewrite_image_prompt,
 )
 from .schedule_view import is_sleeping, locate, now_minutes_for
 
@@ -540,11 +541,20 @@ class ProactiveService:
             prompt = activity or "日常生活的一个随意瞬间"
             if seed and seed not in prompt:
                 prompt = f"{prompt}，{seed}"
+            final_prompt, raw_prompt = await rewrite_image_prompt(
+                self.context,
+                umo=str(info.get("umo") or "") or None,
+                model_id=settings.proactive_model,
+                text=prompt,
+                style=settings.proactive_image_prompt_style,
+                language=settings.proactive_image_prompt_language,
+            )
             path = await fetch_anima_image(
                 self.context,
                 event,
-                prompt=prompt,
+                prompt=final_prompt,
                 workflow=settings.proactive_image_workflow,
+                raw_prompt=raw_prompt,
             )
             if not path:
                 return None

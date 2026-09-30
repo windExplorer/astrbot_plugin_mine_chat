@@ -213,6 +213,38 @@ def build_proactive_user(
 
 
 # --------------------------------------------------------------------------- #
+# 生图画面描述的语种/类型改写
+# --------------------------------------------------------------------------- #
+PROMPT_TRANSLATE_EN = """把下面这句中文画面描述翻译成一句简洁自然的英文描述。
+只输出译文本身，不要解释、不要引号。
+
+中文描述：{text}"""
+
+PROMPT_TO_TAGS = """把下面这句中文画面描述改写成一行英文 Danbooru 标签。
+要求：逗号分隔的小写标签短语，保留人物、动作、场景、情绪与画面要素；
+不要句号，不要解释，不要 markdown 代码块。
+
+中文描述：{text}"""
+
+
+def build_prompt_rewrite(text: str, style: str, language: str) -> str | None:
+    """按目标「类型 / 语种」生成画面描述改写提示词；无需改写返回 None。
+
+    - style=danbooru：改写为英文 Danbooru 标签（标签固定英文，语种忽略）；
+    - style=natural 且 language=en：翻译成英文句子；
+    - style=natural 且 language=zh：原样交给萌绘整理，不需要改写。
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    if style == "danbooru":
+        return fill(PROMPT_TO_TAGS, {"text": text})
+    if language == "en":
+        return fill(PROMPT_TRANSLATE_EN, {"text": text})
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # 工具
 # --------------------------------------------------------------------------- #
 def fill(template: str, mapping: dict[str, Any]) -> str:

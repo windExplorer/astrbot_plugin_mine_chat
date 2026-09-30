@@ -183,6 +183,8 @@ class Settings:
     proactive_image_backend: str = "local"
     proactive_image_dir: str = ""
     proactive_image_workflow: str = ""
+    proactive_image_prompt_style: str = "natural"
+    proactive_image_prompt_language: str = "zh"
     proactive_image_probability: float = 0.25
     proactive_image_max_per_day: int = 2
 
@@ -374,6 +376,24 @@ class Settings:
             proactive_image_dir=to_str(pick(proactive, "image_dir", "proactive_image_dir", "")),
             proactive_image_workflow=to_str(
                 pick(proactive, "image_workflow", "proactive_image_workflow", "")
+            ),
+            proactive_image_prompt_style=to_str(
+                pick(
+                    proactive,
+                    "image_prompt_style",
+                    "proactive_image_prompt_style",
+                    "natural",
+                ),
+                "natural",
+            ),
+            proactive_image_prompt_language=to_str(
+                pick(
+                    proactive,
+                    "image_prompt_language",
+                    "proactive_image_prompt_language",
+                    "zh",
+                ),
+                "zh",
             ),
             proactive_image_probability=to_float(
                 pick(proactive, "image_probability", "proactive_image_probability", 0.25),

@@ -547,6 +547,17 @@ def test_image_backends(c: Checker) -> None:
     c.equal("空 id 兜底", meme_cache_filename("", "png"), "sticker.png")
     c.equal("点开头扩展名", meme_cache_filename("id", ".gif"), "id.gif")
 
+    # 绘图提示词语种 / 类型改写
+    import prompts as prompts_mod
+
+    rewrite = prompts_mod.build_prompt_rewrite
+    tags = rewrite("在图书馆靠窗的位置看书", "danbooru", "zh")
+    c.check("标签模式生成改写指令", tags is not None and "Danbooru" in tags and "图书馆" in tags)
+    en = rewrite("在图书馆看书", "natural", "en")
+    c.check("英文自然语言生成翻译指令", en is not None and "英文" in en and "在图书馆看书" in en)
+    c.check("中文自然语言无需改写", rewrite("在看书", "natural", "zh") is None)
+    c.check("空描述不改写", rewrite("  ", "danbooru", "en") is None)
+
 
 def test_injection_gate(c: Checker) -> None:
     print("\n[11] 注入资格判定")

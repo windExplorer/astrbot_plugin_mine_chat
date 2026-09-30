@@ -122,13 +122,48 @@ def _resolve_draw_handler(context: Any):
     return handler if callable(handler) else None
 
 
+async def rewrite_image_prompt(
+    context: Any,
+    *,
+    umo: str | None,
+    model_id: str,
+    text: str,
+    style: str,
+    language: str,
+) -> tuple[str, bool]:
+    """把中文画面描述按配置的「类型 / 语种」改写；返回 (最终描述, raw_prompt)。
+
+    raw_prompt=True 表示描述已是最终形态（英文 Danbooru 标签），
+    传给 anima 时让它跳过二次整理；改写失败回退中文原文（交由萌绘整理）。
+    """
+    instruction = prompts.build_prompt_rewrite(text, style, language)
+    if instruction is None:
+        return text, False
+    try:
+        rewritten = await llm_mod.chat_text(
+            context,
+            umo=umo,
+            model_id=model_id,
+            system_prompt="你是画面提示词改写助手，只输出结果本身。",
+            prompt=instruction,
+            temperature=0.3,
+        )
+    except llm_mod.LLMError as exc:  # noqa: BLE001
+        logger.warning("mine_chat: 画面描述改写失败，回退中文原文: %s", exc)
+        return text, False
+    rewritten = rewritten.strip().strip('"').strip()
+    if not rewritten:
+        return text, False
+    return rewritten, style == "danbooru"
+
+
 async def fetch_anima_image(
-    context: Any, event: Any, *, prompt: str, workflow: str = ""
+    context: Any, event: Any, *, prompt: str, workflow: str = "", raw_prompt: bool = False
 ) -> str | None:
     """联动 ComfyUI萌绘出一张图，返回服务器本地文件路径（失败返回 None）。
 
-    只传中文画面描述；语种（中/英）与提示词类型（natural/danbooru）由所选
-    工作流绑定的底模配置决定（anima 内部会自动整理），这里不传风格参数。
+    prompt 通常是一句中文画面描述（由萌绘按工作流底模整理语种与风格）；
+    raw_prompt=True 时 prompt 已是最终形态（英文标签），萌绘跳过二次整理。
     event 用投递窗口最近一次真实用户消息事件（anima 侧必需）。
     """
     handler = _resolve_draw_handler(context)
@@ -141,6 +176,8 @@ async def fetch_anima_image(
     kwargs: dict[str, Any] = {"prompt": prompt, "source": ANIMA_SOURCE_TAG}
     if workflow.strip():
         kwargs["workflow"] = workflow.strip()
+    if raw_prompt:
+        kwargs["raw_prompt"] = True
     try:
         result = await asyncio.wait_for(handler(event, **kwargs), timeout=ANIMA_DRAW_TIMEOUT)
     except asyncio.TimeoutError:

@@ -306,6 +306,22 @@
         "type": "string",
         "default": ""
       },
+      "image_prompt_style": {
+        "description": "绘图提示词类型",
+        "hint": "仅 anima 方式有效。natural（自然语言）= 把中文画面描述直接交给萌绘，由它按工作流底模整理；danbooru（标签）= 本插件先把描述改写成英文 Danbooru 标签（逗号分隔），并以原文模式传给萌绘跳过二次整理。",
+        "type": "string",
+        "options": ["natural", "danbooru"],
+        "labels": ["自然语言", "Danbooru 英文标签"],
+        "default": "natural"
+      },
+      "image_prompt_language": {
+        "description": "绘图提示词语种",
+        "hint": "仅 anima 方式且提示词类型为「自然语言」时生效：中文 = 描述原样交给萌绘整理；英文 = 本插件先用模型把描述译成英文句子再传。Danbooru 标签固定为英文。",
+        "type": "string",
+        "options": ["zh", "en"],
+        "labels": ["中文", "英文"],
+        "default": "zh"
+      },
       "image_dir": {
         "description": "本地图库目录",
         "hint": "仅本地图库方式有效：存放候选图片的文件夹绝对路径，支持 jpg / jpeg / png / webp / gif。留空 = 使用插件数据目录下的 images 文件夹。文件名（去掉扩展名）会作为画面线索告诉模型。",
