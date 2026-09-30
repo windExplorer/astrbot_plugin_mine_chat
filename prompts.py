@@ -44,6 +44,7 @@ PLAN_USER_TEMPLATE = """【角色设定】
 {calendar_hint}
 
 【作息参考】大约 {sleep_end} 起床，{sleep_start} 前后入睡。{night_owl_hint}
+{routine_note}
 
 【日程风格】
 {style}
@@ -76,6 +77,7 @@ def build_plan_user(
     sleep_start_text: str,
     sleep_end_text: str,
     night_owl_hint: str,
+    routine_note: str,
     style: str,
     forbidden: list[str],
     recent_lines: list[str],
@@ -95,6 +97,7 @@ def build_plan_user(
             "sleep_start": sleep_start_text,
             "sleep_end": sleep_end_text,
             "night_owl_hint": night_owl_hint,
+            "routine_note": routine_note or "今天的作息与平时基本一致。",
             "style": style or "（无特别偏好）",
             "forbidden": "\n".join(f"- {line}" for line in forbidden) or "（无）",
             "recent": "\n".join(f"- {line}" for line in recent_lines) or "（无历史记录）",

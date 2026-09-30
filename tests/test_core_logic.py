@@ -154,6 +154,10 @@ def load_schedule():
         "_FIXED_HOLIDAYS",
         "_STRICT_TIME_RE",
         "_to_minutes",
+        "_ROUTINE_SLEEP_TIERS",
+        "_ROUTINE_WAKE_TIERS",
+        "_routine_offset",
+        "daily_routine",
         "normalize_items",
         "validate_items",
         "detect_repetition",
@@ -168,6 +172,7 @@ def load_schedule():
             "Settings": config_mod.Settings,
             "date_cls": date,
             "re": re,
+            "random": random,
         },
     )
 
@@ -433,6 +438,68 @@ def test_config_paths(c: Checker) -> None:
     c.check("非法层级拒绝", not set_by_path(empty, "a.b.c", 1))
 
 
+def test_routine(c: Checker) -> None:
+    print("\n[9] 每日作息浮动（偶尔熬夜赖床）")
+    ns = load_schedule()
+    daily_routine = ns["daily_routine"]
+    base_start, base_end = 23 * 60 + 30, 7 * 60 + 30
+
+    first = daily_routine(base_start, base_end, random.Random("routine:p:2026-10-01"))
+    second = daily_routine(base_start, base_end, random.Random("routine:p:2026-10-01"))
+    c.equal("同一天（同种子）作息一致", first["sleep_start"], second["sleep_start"])
+    c.equal("同一天 note 一致", first["note"], second["note"])
+    other = daily_routine(base_start, base_end, random.Random("routine:p:2026-10-02"))
+    c.check(
+        "不同日期作息大概率不同",
+        first["sleep_start"] != other["sleep_start"]
+        or first["sleep_end"] != other["sleep_end"],
+    )
+
+    # 60 个种子：偏移都落在档位范围内，note 与偏移档位严格一致
+    ok = True
+    for seed in range(60):
+        r = daily_routine(base_start, base_end, random.Random(seed))
+        shift, wake = r["sleep_shift"], r["wake_shift"]
+        if not (-60 <= shift <= 140 and -40 <= wake <= 100):
+            c.check(f"seed{seed} 偏移越界 (sleep={shift}, wake={wake})", False)
+            ok = False
+            break
+        expect: list[str] = []
+        if shift >= 70:
+            expect.append("熬夜")
+        elif shift >= 20:
+            expect.append("比平时晚")
+        elif shift <= -20:
+            expect.append("比较早")
+        if wake >= 50:
+            expect.append("懒觉")
+        elif wake >= 15:
+            expect.append("赖床")
+        elif wake <= -15:
+            expect.append("比平时早")
+        for word in expect:
+            if word not in r["note"]:
+                c.check(f"seed{seed} note 缺「{word}」（note={r['note']}）", False)
+                ok = False
+        for word in ("熬夜", "比平时晚", "比较早", "懒觉", "赖床", "比平时早"):
+            if word in r["note"] and word not in expect:
+                c.check(f"seed{seed} note 多出「{word}」（note={r['note']}）", False)
+                ok = False
+    if ok:
+        c.check("60 个种子的偏移范围与 note 档位全部一致", True)
+
+    # 兜底模板支持浮动作息，骨架仍单调不重叠
+    settings = config_mod.Settings.from_config({})
+    routine = daily_routine(base_start, base_end, random.Random(7))
+    items = ns["fallback_items"](settings, routine["sleep_start"], routine["sleep_end"])
+    monotonic = all(
+        items[i + 1]["start_min"] >= items[i]["end_min"] - 1
+        for i in range(len(items) - 1)
+    )
+    c.check("浮动作息下兜底骨架单调不重叠", monotonic)
+    c.check("浮动作息下兜底骨架非空", len(items) >= 4)
+
+
 def main() -> int:
     checker = Checker()
     test_config_tools(checker)
@@ -443,6 +510,7 @@ def main() -> int:
     test_scope_and_segments(checker)
     test_images(checker)
     test_config_paths(checker)
+    test_routine(checker)
 
     print(f"\n共 {checker.count} 项检查，失败 {len(checker.failures)} 项")
     if checker.failures:

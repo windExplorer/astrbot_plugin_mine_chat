@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
 import time
 from datetime import date as date_cls, datetime, timedelta
@@ -160,10 +161,17 @@ def detect_repetition(items: list[dict[str, Any]], recent_activities: list[str])
     return repeated >= 3
 
 
-def fallback_items(settings: Settings) -> list[dict[str, Any]]:
-    """规则兜底模板：作息驱动的一日骨架，保证永远有日程可用。"""
-    wake = settings.schedule_sleep_end_min
-    sleep = settings.schedule_sleep_start_min
+def fallback_items(
+    settings: Settings,
+    sleep_start_min: int | None = None,
+    sleep_end_min: int | None = None,
+) -> list[dict[str, Any]]:
+    """规则兜底模板：作息驱动的一日骨架，保证永远有日程可用。
+
+    作息可传入当天的浮动值（不传则用配置基准）。
+    """
+    wake = settings.schedule_sleep_end_min if sleep_end_min is None else sleep_end_min
+    sleep = settings.schedule_sleep_start_min if sleep_start_min is None else sleep_start_min
     if sleep <= wake:
         sleep += 24 * 60
 
@@ -210,6 +218,68 @@ def calendar_hint(target: date_cls) -> str:
     if target.weekday() >= 5:
         return "今天是周末。"
     return "今天是工作日。"
+
+
+# --------------------------------------------------------------------------- #
+# 每日作息浮动：偶尔熬夜、偶尔赖床
+# --------------------------------------------------------------------------- #
+# 入睡/起床的偏移档位：(概率, 最小偏移分钟, 最大偏移分钟)；概率按顺序累计。
+# 负值 = 早睡 / 早起，正值 = 晚睡 / 赖床。
+_ROUTINE_SLEEP_TIERS: tuple[tuple[float, int, int], ...] = (
+    (0.55, -20, 20),    # 正常波动
+    (0.30, 20, 70),     # 晚睡一点
+    (0.10, 70, 140),    # 熬夜
+    (0.05, -60, -20),   # 早睡
+)
+_ROUTINE_WAKE_TIERS: tuple[tuple[float, int, int], ...] = (
+    (0.55, -20, 20),    # 正常波动
+    (0.30, 15, 50),     # 赖床
+    (0.10, 50, 100),    # 睡懒觉
+    (0.05, -40, -15),   # 早起
+)
+
+
+def _routine_offset(rng: random.Random, tiers: tuple[tuple[float, int, int], ...]) -> int:
+    roll = rng.random()
+    acc = 0.0
+    for probability, low, high in tiers:
+        acc += probability
+        if roll < acc:
+            return int(rng.uniform(low, high))
+    return int(rng.uniform(tiers[-1][1], tiers[-1][2]))
+
+
+def daily_routine(sleep_start_min: int, sleep_end_min: int, rng: random.Random) -> dict[str, Any]:
+    """决定「今天」的实际作息：围绕配置基准浮动，偶尔熬夜和赖床。
+
+    用确定性种子的 rng（调用方建议 `random.Random(f"routine:{persona}:{date}")`），
+    同一天结果稳定：多次生成 / 分级重试之间提示词不会漂移，重装后也一致。
+    返回 {sleep_start, sleep_end, sleep_shift, wake_shift, note}（分钟数已取模当天）。
+    """
+    sleep_shift = _routine_offset(rng, _ROUTINE_SLEEP_TIERS)
+    wake_shift = _routine_offset(rng, _ROUTINE_WAKE_TIERS)
+
+    notes: list[str] = []
+    if sleep_shift >= 70:
+        notes.append("昨晚熬夜了")
+    elif sleep_shift >= 20:
+        notes.append("昨晚睡得比平时晚")
+    elif sleep_shift <= -20:
+        notes.append("昨晚睡得比较早")
+    if wake_shift >= 50:
+        notes.append("今天睡了个懒觉")
+    elif wake_shift >= 15:
+        notes.append("今天有点赖床")
+    elif wake_shift <= -15:
+        notes.append("今天起得比平时早")
+
+    return {
+        "sleep_start": (sleep_start_min + sleep_shift) % (24 * 60),
+        "sleep_end": (sleep_end_min + wake_shift) % (24 * 60),
+        "sleep_shift": sleep_shift,
+        "wake_shift": wake_shift,
+        "note": "，".join(notes),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -306,9 +376,17 @@ class ScheduleService:
         raw_text = ""
         last_problem = ""
 
+        # 当天实际作息：以日期为种子做确定性浮动（偶尔熬夜 / 赖床），
+        # 同一天多次生成与分级重试之间保持一致。
+        routine = daily_routine(
+            settings.schedule_sleep_start_min,
+            settings.schedule_sleep_end_min,
+            random.Random(f"routine:{persona_id}:{plan_date}"),
+        )
+
         for attempt in range(0, max(0, settings.schedule_max_retry) + 1):
             prompt = await self._build_prompt(
-                persona_id, plan_date, hint=last_problem
+                persona_id, plan_date, hint=last_problem, routine=routine
             )
             system = (
                 settings.prompt_plan_override.strip()
@@ -360,7 +438,9 @@ class ScheduleService:
             break
 
         if not items:
-            items = fallback_items(settings)
+            items = fallback_items(
+                settings, routine["sleep_start"], routine["sleep_end"]
+            )
             _, quality = validate_items(items, settings)
             final_source = "fallback"
             logger.info("mine_chat: 日程走兜底模板 persona=%s date=%s", persona_id, plan_date)
@@ -390,7 +470,14 @@ class ScheduleService:
         return plan or {"persona_id": persona_id, "plan_date": plan_date, "items": items}
 
     # ---------------------------------------------------------------- #
-    async def _build_prompt(self, persona_id: str, plan_date: str, *, hint: str = "") -> str:
+    async def _build_prompt(
+        self,
+        persona_id: str,
+        plan_date: str,
+        *,
+        hint: str = "",
+        routine: dict[str, Any] | None = None,
+    ) -> str:
         settings = self._settings_getter()
         persona_prompt = await self.resolver.persona_prompt(persona_id)
         if len(persona_prompt) > 3000:
@@ -426,9 +513,18 @@ class ScheduleService:
             date_text=target.strftime("%Y年%m月%d日"),
             weekday_text=_WEEKDAY_NAMES[target.weekday()],
             calendar_hint=calendar_hint(target),
-            sleep_start_text=fmt_hhmm(settings.schedule_sleep_start_min),
-            sleep_end_text=fmt_hhmm(settings.schedule_sleep_end_min),
+            sleep_start_text=fmt_hhmm(
+                routine["sleep_start"] if routine else settings.schedule_sleep_start_min
+            ),
+            sleep_end_text=fmt_hhmm(
+                routine["sleep_end"] if routine else settings.schedule_sleep_end_min
+            ),
             night_owl_hint=night_owl_hint,
+            routine_note=(
+                f"今天的实际作息：{routine['note']}。请按这个作息排今天的日程。"
+                if routine and routine.get("note")
+                else "今天的作息与平时基本一致。"
+            ),
             style=settings.schedule_style,
             forbidden=settings.schedule_forbidden,
             recent_lines=recent_lines,
