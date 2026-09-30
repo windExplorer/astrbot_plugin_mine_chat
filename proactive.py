@@ -217,14 +217,16 @@ class ProactiveService:
         return True if value is None else int(value) == 1
 
     async def check_and_send(
-        self, persona_id: str, *, manual: bool = False
+        self, persona_id: str, *, manual: bool = False, force: bool = False
     ) -> tuple[bool, str]:
         settings: Settings = self._settings_getter()
         state = await self.store.get_proactive_state(persona_id)
         if not self._runtime_enabled(state):
             return False, "disabled"
 
-        ok, reason, info = await self._check_gates(persona_id, state, settings, manual=manual)
+        ok, reason, info = await self._check_gates(
+            persona_id, state, settings, manual=manual, force=force
+        )
         if not ok:
             await self._after_reject(persona_id, state, reason, info, settings)
             return False, reason
@@ -233,7 +235,7 @@ class ProactiveService:
         async with lock:
             fresh = await self.store.get_proactive_state(persona_id)
             ok2, reason2, info2 = await self._check_gates(
-                persona_id, fresh, settings, manual=True
+                persona_id, fresh, settings, manual=True, force=force
             )
             if not ok2:
                 await self._after_reject(persona_id, fresh, reason2, info2, settings)
@@ -241,8 +243,13 @@ class ProactiveService:
             return await self._do_send(persona_id, fresh, info2, settings)
 
     async def trigger_now(self, persona_id: str) -> tuple[bool, str]:
-        """手动立即触发（仍受开关/静默/睡眠等闸门约束）。"""
-        return await self.check_and_send(persona_id, manual=True)
+        """手动立即触发（指令 / WebUI「立即主动」共用）。
+
+        force：跳过免打扰、睡眠、每日上限、最小间隔、未回复上限、用户刚说话
+        这些环境类闸门——管理员主动点的按钮不该被「现在不是时候」挡住。
+        只保留两个硬性检查：插件/主动开关（disabled）与投递窗口（no_umo）。
+        """
+        return await self.check_and_send(persona_id, manual=True, force=True)
 
     async def note_user_activity(self, persona_id: str) -> None:
         """用户说话后：解冻未回复计数并重排下一次主动。"""
@@ -276,7 +283,14 @@ class ProactiveService:
         settings: Settings,
         *,
         manual: bool = False,
+        force: bool = False,
     ) -> tuple[bool, str, dict[str, Any]]:
+        """有序闸门链。
+
+        force=True（手动触发）：跳过免打扰/睡眠/每日上限/最小间隔/未回复上限/
+        用户刚说话这些「环境与节流」闸门，只保留 disabled 与 no_umo 两个硬性检查；
+        no_seed 在 manual 下本就放行。
+        """
         info: dict[str, Any] = {}
 
         if not settings.enabled or not settings.proactive_enabled:
@@ -286,7 +300,7 @@ class ProactiveService:
         now = time.time()
         now_minute = now_dt.hour * 60 + now_dt.minute
 
-        if settings.quiet_now(now_minute):
+        if not force and settings.quiet_now(now_minute):
             return False, "quiet_hours", info
 
         umo = str(state.get("primary_umo") or "").strip()
@@ -313,7 +327,7 @@ class ProactiveService:
             }
         )
 
-        if settings.proactive_skip_sleeping and is_sleeping(current):
+        if not force and settings.proactive_skip_sleeping and is_sleeping(current):
             return False, "sleeping", info
         if not manual and current is None and previous is None:
             return False, "no_seed", info
@@ -323,11 +337,15 @@ class ProactiveService:
             int(state.get("sent_today") or 0) if state.get("sent_date") == today else 0
         )
         info["sent_today"] = sent_today
-        if settings.proactive_daily_limit > 0 and sent_today >= settings.proactive_daily_limit:
+        if (
+            not force
+            and settings.proactive_daily_limit > 0
+            and sent_today >= settings.proactive_daily_limit
+        ):
             return False, "daily_limit", info
 
         last_sent = state.get("last_sent_at")
-        if last_sent:
+        if not force and last_sent:
             elapsed_minutes = (now - float(last_sent)) / 60.0
             if elapsed_minutes < settings.proactive_min_interval_minutes:
                 info["retry_in_minutes"] = (
@@ -338,13 +356,14 @@ class ProactiveService:
         unanswered = int(state.get("unanswered") or 0)
         info["unanswered"] = unanswered
         if (
-            settings.proactive_max_unanswered > 0
+            not force
+            and settings.proactive_max_unanswered > 0
             and unanswered >= settings.proactive_max_unanswered
         ):
             return False, "unanswered_limit", info
 
         last_user = state.get("last_user_at")
-        if last_user:
+        if not force and last_user:
             elapsed_minutes = (now - float(last_user)) / 60.0
             if elapsed_minutes < settings.proactive_user_active_cooldown_minutes:
                 info["retry_in_minutes"] = (

@@ -91,7 +91,7 @@ function confirmNow() {
   if (!personaId) return;
   dialog.warning({
     title: "立即主动一次",
-    content: "会真的调用模型并往投递窗口发消息（仍受静默时段、睡眠、每日上限等限制）。确定继续？",
+    content: "会真的调用模型并往投递窗口发消息。手动触发不受免打扰、睡眠、每日上限等限制（只要求插件开启且已有投递窗口）。确定继续？",
     positiveText: "继续",
     negativeText: "取消",
     onPositiveClick: async () => {

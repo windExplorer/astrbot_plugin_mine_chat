@@ -325,6 +325,7 @@ export function apiProactiveToggle(personaId: string, enabled: boolean) {
 }
 
 /** 立即触发一次（真打模型 + 真发送，给足超时）。 */
+/** 手动「立即主动」：后端会跳过免打扰/睡眠/每日上限等环境闸门，仅保留开关与窗口检查。 */
 export function apiProactiveNow(personaId: string) {
   return apiPost<{ sent: boolean; reason: string }>("/proactive/now", { persona_id: personaId }, 180000);
 }
