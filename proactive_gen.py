@@ -537,6 +537,11 @@ class ProactiveComposer:
         unanswered = int(state.get("unanswered") or 0)
         last_proactive = str(state.get("last_message") or "")
 
+        image_hint = (
+            prompts.build_image_hint(str(image_plan.get("desc") or ""))
+            if image_plan
+            else ""
+        )
         if settings.prompt_proactive_override.strip():
             system = prompts.fill(
                 settings.prompt_proactive_override,
@@ -549,6 +554,7 @@ class ProactiveComposer:
                     "unanswered": str(unanswered),
                     "now": self.now_text(),
                     "extra": settings.proactive_extra_instruction,
+                    "image_hint": image_hint,
                 },
             )
         else:
@@ -557,11 +563,7 @@ class ProactiveComposer:
                 max_segments=settings.proactive_max_segments,
                 unanswered=unanswered,
                 extra=settings.proactive_extra_instruction,
-                image_hint=prompts.build_image_hint(
-                    str(image_plan.get("desc") or "")
-                )
-                if image_plan
-                else "",
+                image_hint=image_hint,
             )
             if persona_prompt:
                 system = f"{system}\n\n【你的人物设定】\n{persona_prompt}"

@@ -663,7 +663,13 @@ class ProactiveService:
             await self._record(
                 persona_id, "img", "img_ok", umo, content=f"anima {os.path.basename(path)}"
             )
-            return {"kind": "anima", "path": path, "desc": ""}, True, ""
+            # desc=实际喂给画图的画面描述：文字生成必须知道图里画的是什么，
+            # 否则会出现「文字说吵醒你了、图里却在沉睡」的图文脱节
+            return {
+                "kind": "anima",
+                "path": path,
+                "desc": (final_prompt or "")[:120],
+            }, True, ""
 
         # 本地图库（默认后端）
         directory = str(settings.proactive_image_dir or "").strip() or self._default_image_dir
