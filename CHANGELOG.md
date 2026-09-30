@@ -1,5 +1,34 @@
 # 更新日志
 
+## v1.0.15（表情联动改为跨插件调用，token 配置降级为兜底）
+
+**需求**：既然联动了 moe_meme，就该直接调用 moe_meme 插件发表情，而不是复刻它的数据源；
+moe_meme 没有跨插件 API 就给它加上。
+
+**问题**：v1.0.9 起的「联动」其实是 `importlib` 直拉 moe_meme 的 `wuwa_source` 模块自建
+连接——站方 token 要在本插件再配一份、本地缓存目录也各存一套，凭据与缓存没有统一归属。
+
+### moe_meme v0.2.0（配套升级）
+
+- 新增跨插件 API `api_random_sticker_path(character="") -> str | None`：
+  其他插件经 `context.get_registered_star("astrbot_plugin_moe_meme").star_cls` 调用，
+  拿到的是**本地缓存文件路径**，可直接发送；token、缓存目录、最近发过去重都由 moe_meme
+  自己管理。API 不做冷却/限额/安静时段（那是它的主动通道策略），调用方自行节流。
+- 顺带修正 `@register` 装饰器里滞留的 v0.1.0 版本号（原与 metadata.yaml 不同步）。
+- README 新增「跨插件 API」用法文档；moe_meme 自带 4 个测试文件全过。
+
+### mine_chat 改动
+
+- `fetch_meme_image_via_plugin()`：优先走上述跨插件 API（带 60s 超时）；未安装、
+  停用、v0.2.0 以下或 API 失败时，回退原直连路径（token + 本插件缓存目录）。
+- `_plan_sticker` 调用顺序调整为「跨插件优先，直连兜底」。
+- 配置项「表情包 API Token」改名为「表情包 API Token（直连兜底用）」，提示改为：
+  已装 moe_meme v0.2.0+ 时**无需填写**，站方凭据只在 moe_meme 配置一份。
+- 自检新增 6 项跨插件取图用例（命中/未安装/停用/旧版本/API 异常/宿主异常），171 项全过。
+
+**升级要求**：表情联动要享受零配置 token，请把两个插件一起升级
+（moe_meme ≥ v0.2.0）；只升本插件也没问题，会自动回退直连，行为同 v1.0.14。
+
 ## v1.0.14（配图 / 表情通道纳入裁决日志）
 
 **需求**：最近裁决里面把发图和表情的也加上，看看到底是什么原因没有发图和发表情。

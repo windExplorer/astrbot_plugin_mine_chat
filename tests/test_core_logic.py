@@ -11,6 +11,7 @@ astrbot.api.logger，本机装不了完整 AstrBot，于是用 AST 从源文件�
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import os
 import random
@@ -24,6 +25,16 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import config as config_mod  # noqa: E402  (不依赖 astrbot，可直接导入)
+
+
+class _QuietLogger:
+    """吞掉日志的自检用 logger（被测函数内部 logger.info/warning 静默）。"""
+
+    def __getattr__(self, name):
+        def _sink(*args, **kwargs):
+            pass
+
+        return _sink
 
 
 # --------------------------------------------------------------------------- #
@@ -521,11 +532,66 @@ def test_image_backends(c: Checker) -> None:
             "parse_anima_result",
             "_MEME_EXTS",
             "meme_cache_filename",
+            "fetch_meme_image_via_plugin",
         },
-        {"json": json, "re": re},
+        {"json": json, "re": re, "asyncio": asyncio, "logger": _QuietLogger()},
     )
     parse_anima_result = ns["parse_anima_result"]
     meme_cache_filename = ns["meme_cache_filename"]
+    via_plugin = ns["fetch_meme_image_via_plugin"]
+
+    # 跨插件取图：moe_meme 装了/没装/停用/旧版本/API 抛异常
+    class _Inst:
+        def __init__(self, path="/tmp/s.png", fail=False, with_api=True):
+            self.path, self.fail, self.with_api = path, fail, with_api
+            self.args = None
+
+        async def api_random_sticker_path(self, character=""):
+            if not self.with_api:
+                raise AttributeError
+            self.args = character
+            if self.fail:
+                raise RuntimeError("boom")
+            return self.path
+
+    class _Meta:
+        def __init__(self, inst=None, activated=True):
+            self.star_cls, self.activated = inst, activated
+
+    class _Ctx:
+        def __init__(self, meta=None, boom=False):
+            self.meta, self.boom = meta, boom
+
+        def get_registered_star(self, name):
+            if self.boom:
+                raise RuntimeError("host changed")
+            return self.meta
+
+    c.equal(
+        "跨插件取图：命中返回路径",
+        asyncio.run(via_plugin(_Ctx(_Meta(_Inst())))),
+        "/tmp/s.png",
+    )
+    inst = _Inst()
+    asyncio.run(via_plugin(_Ctx(_Meta(inst))))
+    c.equal("跨插件取图默认全库随机（character 空串）", inst.args, "")
+    c.check("未安装 moe_meme 返回 None", asyncio.run(via_plugin(_Ctx(None))) is None)
+    c.check(
+        "插件停用返回 None",
+        asyncio.run(via_plugin(_Ctx(_Meta(_Inst(), activated=False)))) is None,
+    )
+    c.check(
+        "旧版本无 API 返回 None",
+        asyncio.run(via_plugin(_Ctx(_Meta(_Inst(with_api=False))))) is None,
+    )
+    c.check(
+        "API 抛异常返回 None（交兜底）",
+        asyncio.run(via_plugin(_Ctx(_Meta(_Inst(fail=True))))) is None,
+    )
+    c.check(
+        "宿主接口异常返回 None",
+        asyncio.run(via_plugin(_Ctx(_Meta(_Inst()), boom=True))) is None,
+    )
 
     ok_payload = json.dumps({"status": "ok", "image_paths": ["/tmp/a.png"]})
     c.equal("companion JSON 取路径", parse_anima_result(ok_payload), "/tmp/a.png")

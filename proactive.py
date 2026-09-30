@@ -26,6 +26,7 @@ from .proactive_gen import (
     compose_image_prompt,
     fetch_anima_image,
     fetch_meme_image,
+    fetch_meme_image_via_plugin,
     image_desc_from_path,
     list_image_files,
 )
@@ -623,12 +624,15 @@ class ProactiveService:
             await self._record(persona_id, "sticker", "sticker_limit", "", throttle=True)
             return None
 
-        path = await fetch_meme_image(
-            settings.proactive_sticker_token, self._meme_cache_dir
-        )
+        path = await fetch_meme_image_via_plugin(self.context)
+        if path is None:
+            # 跨插件 API 不可用（moe_meme 未安装/未激活/v0.2.0 以下）才走直连兜底
+            path = await fetch_meme_image(
+                settings.proactive_sticker_token, self._meme_cache_dir
+            )
         if not path:
-            # fetch_meme_image 内部区分了「未安装 moe_meme」与「拉取失败」，
-            # 都只 info 级日志；这里落一条可见的裁决，用户才知道表情通道其实失败了。
+            # 两条路径失败都只 info 级日志；这里落一条可见的裁决，
+            # 用户才知道表情通道其实失败了。
             await self._record(persona_id, "sticker", "sticker_fail", "", throttle=True)
             return None
         await self._record(

@@ -349,8 +349,8 @@
         "default": false
       },
       "sticker_token": {
-        "description": "表情包 API Token",
-        "hint": "emoji.wuwa.games 的 API Token（与萌萌表情包插件共用同一凭据，站方未公布携带方式，按 Bearer 头预留）。留空 = 匿名访问。",
+        "description": "表情包 API Token（直连兜底用）",
+        "hint": "已安装萌萌表情包 v0.2.0+ 时走跨插件 API（token/缓存由它管理），本项不用填。仅当其未安装或版本过旧时才按此 token 直连站方，留空 = 匿名。",
         "type": "string",
         "default": ""
       },

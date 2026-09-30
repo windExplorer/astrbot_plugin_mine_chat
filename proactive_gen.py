@@ -229,12 +229,36 @@ def meme_cache_filename(sticker_id: str, fmt: str) -> str:
     return f"{safe}.{ext}"
 
 
-async def fetch_meme_image(token: str, cache_dir: str) -> str | None:
-    """从萌萌表情包的数据源随机拉一张表情，落本地缓存后返回路径。
+async def fetch_meme_image_via_plugin(context: Any) -> str | None:
+    """优先走萌萌表情包插件的跨插件 API 拿本地缓存图（moe_meme v0.2.0+）。
 
-    moe_meme 没有跨插件 API，这里直接复用其数据源模块
-    astrbot_plugin_moe_meme.wuwa_source（只依赖 aiohttp）。票券链约
-    16 分钟有效，所以必须下载落盘后再发本地文件，绝不发远端 URL。
+    插件没暴露这个 API 时返回 None（而不是异常），调用方回退直连：
+    token、缓存目录、去重都由 moe_meme 自己管——联动是「调用」而不是
+    「复刻它的数据源」，站方凭据只应该在它那里配一份。
+    """
+    try:
+        meta = context.get_registered_star("astrbot_plugin_moe_meme")
+    except Exception:  # noqa: BLE001 - 宿主接口变动时按「不可用」处理
+        return None
+    if meta is None or not getattr(meta, "activated", False):
+        return None
+    fn = getattr(getattr(meta, "star_cls", None), "api_random_sticker_path", None)
+    if not callable(fn):
+        return None
+    try:
+        path = await asyncio.wait_for(fn(), timeout=60.0)
+    except Exception as exc:  # noqa: BLE001 - API 失败交由调用方兜底
+        logger.info("mine_chat: 萌萌表情包跨插件取图失败: %s", exc)
+        return None
+    return str(path) if path else None
+
+
+async def fetch_meme_image(token: str, cache_dir: str) -> str | None:
+    """直连兜底：moe_meme 未安装/未激活/版本过旧（无跨插件 API）时才走这里。
+
+    直接复用其数据源模块 astrbot_plugin_moe_meme.wuwa_source（只依赖
+    aiohttp）自建连接，token 来自本插件配置。票券链约 16 分钟有效，
+    必须下载落盘后再发本地文件，绝不发远端 URL。
     """
     try:
         module = importlib.import_module("astrbot_plugin_moe_meme.wuwa_source")
