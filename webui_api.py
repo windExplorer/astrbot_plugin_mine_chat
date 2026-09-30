@@ -671,6 +671,8 @@ async def h_world(plugin) -> dict:
             "auto": auto,
             "kb_name": kb_name,
             "kb_options": kb_options,
+            "anchor_anime": settings.proactive_image_anchor_anime,
+            "anchor_realistic": settings.proactive_image_anchor_realistic,
         }
     )
 
@@ -689,6 +691,22 @@ async def h_world_save(plugin) -> dict:
         plugin.config["schedule"] = group
     group["world"] = world
     group["character"] = character
+
+    def _set_group_key(group_name: str, key: str, value: str) -> None:
+        sub = plugin.config.get(group_name)
+        if not isinstance(sub, dict):
+            sub = {}
+            plugin.config[group_name] = sub
+        sub[key] = value
+
+    anchor_anime = body.get("anchor_anime")
+    if anchor_anime is not None:
+        _set_group_key("proactive", "image_anchor_anime", str(anchor_anime).strip())
+    anchor_realistic = body.get("anchor_realistic")
+    if anchor_realistic is not None:
+        _set_group_key(
+            "proactive", "image_anchor_realistic", str(anchor_realistic).strip()
+        )
     try:
         plugin.config.save_config()
     except Exception as exc:  # noqa: BLE001

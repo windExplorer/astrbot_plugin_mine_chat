@@ -38,6 +38,44 @@
         </n-space>
       </n-card>
 
+      <n-card size="small" class="section" title="角色锚点（画面出镜角色本人时的外貌描述）">
+        <n-space vertical size="large">
+          <div>
+            <div class="field-label">动漫画风</div>
+            <n-input
+              v-model:value="anchorAnime"
+              type="textarea"
+              placeholder="例：1girl, silver long hair, red eyes, hair ornament, white dress（触发词或外貌标签）"
+              :autosize="{ minRows: 2, maxRows: 5 }"
+            />
+          </div>
+          <div>
+            <div class="field-label">真人写实画风</div>
+            <n-input
+              v-model:value="anchorRealistic"
+              type="textarea"
+              placeholder="例：二十岁出头的女生，黑色长直发，杏眼，气质安静，常穿浅色毛衣。"
+              :autosize="{ minRows: 2, maxRows: 5 }"
+            />
+          </div>
+          <n-text depth="3" style="font-size: 12px">
+            按当前「绘图画风」取用对应一套；只有画面出镜角色本人（自拍/入镜）时才会注入，
+            风景/物品等画面不使用。留空时自动从绑定知识库检索「角色形象」，都没有则不注入。
+          </n-text>
+          <n-space>
+            <n-button
+              size="small"
+              type="primary"
+              :loading="anchorSaving"
+              :disabled="anchorAnime === (data?.anchor_anime ?? '') && anchorRealistic === (data?.anchor_realistic ?? '')"
+              @click="saveAnchors"
+            >
+              保存锚点
+            </n-button>
+          </n-space>
+        </n-space>
+      </n-card>
+
       <n-card size="small" class="section" title="自动提取（从人格提示词 + 知识库）">
         <template #header-extra>
           <n-button size="tiny" :loading="rebuilding" @click="rebuild">
@@ -115,7 +153,10 @@ const kbSaving = ref(false);
 const data = ref<WorldPayload | null>(null);
 const manualWorld = ref("");
 const manualCharacter = ref("");
+const anchorAnime = ref("");
+const anchorRealistic = ref("");
 const kbSelected = ref<string | null>(null);
+const anchorSaving = ref(false);
 
 const kbOptions = computed(() => [
   { label: "（不绑定）", value: "" },
@@ -137,14 +178,19 @@ function tsText(ts: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+let inputsInitialized = false;
+
 async function load() {
   loading.value = true;
   try {
     data.value = await apiWorld();
     // 手动输入只在首次加载时填入，轮询刷新不覆盖正在编辑的内容
-    if (!dirty.value) {
+    if (!inputsInitialized) {
       manualWorld.value = data.value?.manual_world ?? "";
       manualCharacter.value = data.value?.manual_character ?? "";
+      anchorAnime.value = data.value?.anchor_anime ?? "";
+      anchorRealistic.value = data.value?.anchor_realistic ?? "";
+      inputsInitialized = true;
     }
     kbSelected.value = data.value?.kb_name || "";
   } catch (e: any) {
@@ -175,6 +221,22 @@ async function saveManual() {
     message.error(e?.message || String(e));
   } finally {
     saving.value = false;
+  }
+}
+
+async function saveAnchors() {
+  anchorSaving.value = true;
+  try {
+    await apiWorldSave(manualWorld.value.trim(), manualCharacter.value.trim(), {
+      anchor_anime: anchorAnime.value.trim(),
+      anchor_realistic: anchorRealistic.value.trim(),
+    });
+    message.success("已保存角色锚点。");
+    await load();
+  } catch (e: any) {
+    message.error(e?.message || String(e));
+  } finally {
+    anchorSaving.value = false;
   }
 }
 

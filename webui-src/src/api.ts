@@ -373,6 +373,8 @@ export interface WorldPayload {
   auto: AutoProfile | null;
   kb_name: string | null;
   kb_options: string[];
+  anchor_anime: string;
+  anchor_realistic: string;
 }
 
 /** 世界观设定页数据（手动配置 + 自动提取缓存 + 知识库绑定与候选）。 */
@@ -382,9 +384,19 @@ export function apiWorld(personaId = "") {
   return apiGet<WorldPayload>(`/world?${p.toString()}`);
 }
 
-/** 保存手动世界观/角色补充设定（写入配置，优先级高于自动提取）。 */
-export function apiWorldSave(world: string, character: string, timeoutMs = 30000) {
-  return apiPost<{ world: string; character: string }>("/world/save", { world, character }, timeoutMs);
+/** 保存手动世界观/角色补充设定（写入配置，优先级高于自动提取）；
+ *  传 anchor_* 时一并保存角色锚点。 */
+export function apiWorldSave(
+  world: string,
+  character: string,
+  extra: { anchor_anime?: string; anchor_realistic?: string } = {},
+  timeoutMs = 30000,
+) {
+  return apiPost<{ world: string; character: string }>(
+    "/world/save",
+    { world, character, ...extra },
+    timeoutMs,
+  );
 }
 
 /** 绑定/解绑人格的知识库（空串 = 解绑）。换绑后自动提取会重新提炼。 */
