@@ -22,6 +22,8 @@ from .config import Settings
 from .proactive_gen import (
     ProactiveComposer,
     choose_image_file,
+    fetch_anima_image,
+    fetch_meme_image,
     image_desc_from_path,
     list_image_files,
 )
@@ -59,6 +61,7 @@ class ProactiveService:
         schedule: Any,
         settings_getter,
         default_image_dir: str = "",
+        meme_cache_dir: str = "",
     ) -> None:
         self.context = context
         self.store = store
@@ -73,7 +76,14 @@ class ProactiveService:
         self._locks: dict[str, asyncio.Lock] = {}
         self._skip_log_at: dict[tuple[str, str], float] = {}
         self._default_image_dir = default_image_dir
+        self._meme_cache_dir = meme_cache_dir
         self._image_dir_warned = False
+        self._last_event: Any = None
+
+    def remember_event(self, event: Any) -> None:
+        """记录投递窗口最近一次真实用户消息事件（anima 出图需要 event）。"""
+        if event is not None:
+            self._last_event = event
 
     # ---------------------------------------------------------------- #
     # 生命周期
@@ -384,7 +394,7 @@ class ProactiveService:
             return False, "no_umo"
 
         before_user_at = state.get("last_user_at")
-        image_plan = self._plan_image(settings, state)
+        image_plan = await self._plan_image(settings, state, info)
 
         try:
             texts = await self.composer.generate(
@@ -467,8 +477,25 @@ class ProactiveService:
         await self._reschedule(persona_id)
         return True, "ok"
 
-    def _plan_image(self, settings: Settings, state: dict[str, Any]) -> dict[str, Any] | None:
-        """决定这次主动消息要不要带图、带哪张（生成前调用，提示词需要知道）。"""
+    def _warn_image(self, message_text: str) -> None:
+        """配图相关告警只提示一次，避免每次掷骰都刷屏。"""
+        if self._image_dir_warned:
+            logger.debug("mine_chat: %s", message_text)
+            return
+        self._image_dir_warned = True
+        logger.warning("mine_chat: %s", message_text)
+
+    async def _plan_image(
+        self,
+        settings: Settings,
+        state: dict[str, Any],
+        info: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """决定这次主动消息要不要带图、用哪个后端拿图（生成前调用）。
+
+        掷骰与每日上限对所有后端一致；anima 出图耗时较长（最长 180s），
+        拉图期间用户插嘴由 _do_send 现有的 last_user_at 检测兜住。
+        """
         if not settings.proactive_image_enabled:
             return None
         if settings.proactive_image_probability <= 0:
@@ -485,22 +512,53 @@ class ProactiveService:
         if limit > 0 and used >= limit:
             return None
 
+        backend = (settings.proactive_image_backend or "local").strip().lower()
+
+        if backend == "anima":
+            event = self._last_event
+            if event is None:
+                self._warn_image(
+                    "配图方式为 ComfyUI萌绘，但还没有任何用户消息事件可复用——"
+                    "先和角色聊一句再开启配图"
+                )
+                return None
+            current = info.get("current") or info.get("previous") or {}
+            activity = str(current.get("activity") or "").strip()
+            seed = str(info.get("seed") or "").strip()
+            prompt = activity or "日常生活的一个随意瞬间"
+            if seed and seed not in prompt:
+                prompt = f"{prompt}，{seed}"
+            path = await fetch_anima_image(
+                self.context,
+                event,
+                prompt=prompt,
+                workflow=settings.proactive_image_workflow,
+            )
+            if not path:
+                return None
+            return {"kind": "anima", "path": path, "desc": ""}
+
+        if backend == "meme":
+            path = await fetch_meme_image(
+                settings.proactive_meme_token, self._meme_cache_dir
+            )
+            if not path:
+                return None
+            return {"kind": "meme", "path": path, "desc": ""}
+
+        # 本地图库（默认后端）
         directory = str(settings.proactive_image_dir or "").strip() or self._default_image_dir
         files = list_image_files(directory)
         if not files:
-            if not self._image_dir_warned:
-                self._image_dir_warned = True
-                logger.warning(
-                    "mine_chat: 已开启主动消息配图，但图库目录为空或不可读（%s）——"
-                    "把图片放进去即可，无需重启",
-                    directory or "（未配置）",
-                )
+            self._warn_image(
+                f"配图方式为本地图库，但图库目录为空或不可读（{directory or '未配置'}）——"
+                "把图片放进去即可，无需重启"
+            )
             return None
-
         path = choose_image_file(files)
         if not path:
             return None
-        return {"path": path, "desc": image_desc_from_path(path)}
+        return {"kind": "local", "path": path, "desc": image_desc_from_path(path)}
 
     # ---------------------------------------------------------------- #
     # 排期

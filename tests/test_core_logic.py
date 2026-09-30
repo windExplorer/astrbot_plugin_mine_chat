@@ -11,6 +11,7 @@ astrbot.api.logger，本机装不了完整 AstrBot，于是用 AST 从源文件�
 from __future__ import annotations
 
 import ast
+import json
 import os
 import random
 import re
@@ -500,6 +501,43 @@ def test_routine(c: Checker) -> None:
     c.check("浮动作息下兜底骨架非空", len(items) >= 4)
 
 
+def test_image_backends(c: Checker) -> None:
+    print("\n[10] 配图后端（anima / 表情包）")
+    ns = load_defs(
+        "proactive_gen.py",
+        {
+            "ANIMA_SOURCE_TAG",
+            "ANIMA_DRAW_TIMEOUT",
+            "parse_anima_result",
+            "_MEME_EXTS",
+            "meme_cache_filename",
+        },
+        {"json": json, "re": re},
+    )
+    parse_anima_result = ns["parse_anima_result"]
+    meme_cache_filename = ns["meme_cache_filename"]
+
+    ok_payload = json.dumps({"status": "ok", "image_paths": ["/tmp/a.png"]})
+    c.equal("companion JSON 取路径", parse_anima_result(ok_payload), "/tmp/a.png")
+    c.equal("dict 形态同样可解析", parse_anima_result({"status": "ok", "image_paths": ["x.png"]}), "x.png")
+    c.check(
+        "多张取第一张",
+        parse_anima_result({"status": "ok", "image_paths": ["a.png", "b.png"]}) == "a.png",
+    )
+    c.check(
+        "失败纯文本（无 JSON）返回 None",
+        parse_anima_result("本次生图失败。请用一句话简短向用户说明生成遇到问题即可。") is None,
+    )
+    c.check("status 非 ok 返回 None", parse_anima_result({"status": "error"}) is None)
+    c.check("空路径列表返回 None", parse_anima_result({"status": "ok", "image_paths": []}) is None)
+    c.check("垃圾文本返回 None", parse_anima_result("not json at all") is None)
+
+    c.equal("表情文件名清洗", meme_cache_filename("abc/123:x", "GIF"), "abc_123_x.gif")
+    c.equal("非法扩展回退 png", meme_cache_filename("id1", "bmp"), "id1.png")
+    c.equal("空 id 兜底", meme_cache_filename("", "png"), "sticker.png")
+    c.equal("点开头扩展名", meme_cache_filename("id", ".gif"), "id.gif")
+
+
 def main() -> int:
     checker = Checker()
     test_config_tools(checker)
@@ -511,6 +549,7 @@ def main() -> int:
     test_images(checker)
     test_config_paths(checker)
     test_routine(checker)
+    test_image_backends(checker)
 
     print(f"\n共 {checker.count} 项检查，失败 {len(checker.failures)} 项")
     if checker.failures:

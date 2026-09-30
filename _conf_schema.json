@@ -288,13 +288,33 @@
       },
       "image_enabled": {
         "description": "主动消息可以配图",
-        "hint": "开启后，主动消息有一定概率随附一张图片。图片来自下面的图库目录（把用 comfyui-anima / nai 等生成好的图放进去即可），模型不会在线生成图片。",
+        "hint": "开启后，主动消息有一定概率随附一张图片。图源由「配图方式」决定：联动 ComfyUI萌绘出图、本地图库、或联动萌萌表情包。",
         "type": "bool",
         "default": false
       },
+      "image_backend": {
+        "description": "配图方式",
+        "hint": "anima = 联动 ComfyUI萌绘（comfyui_draw）现场出图，画面取自当前日程片段，语种（中/英）与提示词类型（natural/danbooru）由所选工作流绑定的底模配置决定；local = 本地图库随机挑一张；meme = 联动萌萌表情包随机发一张。",
+        "type": "string",
+        "options": ["local", "anima", "meme"],
+        "labels": ["本地图库", "ComfyUI萌绘出图", "萌萌表情包"],
+        "default": "local"
+      },
+      "image_workflow": {
+        "description": "anima 出图工作流",
+        "hint": "仅 anima 方式有效：ComfyUI萌绘里的工作流名称（可在它的控制台查看，或用 /draw 的工作流名）。留空 = 使用萌绘的默认工作流。",
+        "type": "string",
+        "default": ""
+      },
+      "meme_token": {
+        "description": "表情包 API Token",
+        "hint": "仅表情包方式有效：emoji.wuwa.games 的 API Token（与萌萌表情包插件共用同一凭据，站方未公布携带方式，按 Bearer 头预留）。留空 = 匿名访问。",
+        "type": "string",
+        "default": ""
+      },
       "image_dir": {
-        "description": "图库目录",
-        "hint": "存放候选图片的文件夹绝对路径，支持 jpg / jpeg / png / webp / gif。留空 = 使用插件数据目录下的 images 文件夹。文件名（去掉扩展名）会作为画面线索告诉模型。",
+        "description": "本地图库目录",
+        "hint": "仅本地图库方式有效：存放候选图片的文件夹绝对路径，支持 jpg / jpeg / png / webp / gif。留空 = 使用插件数据目录下的 images 文件夹。文件名（去掉扩展名）会作为画面线索告诉模型。",
         "type": "string",
         "default": ""
       },

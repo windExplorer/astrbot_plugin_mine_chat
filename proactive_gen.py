@@ -9,9 +9,11 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 import random
+import re
 from datetime import datetime
 from typing import Any
 
@@ -64,6 +66,159 @@ def image_desc_from_path(path: str) -> str:
     if not stem or stem.isdigit():
         return ""
     return stem[:60]
+
+
+# --------------------------------------------------------------------------- #
+# 联动 ComfyUI萌绘（anima）出图
+# --------------------------------------------------------------------------- #
+# anima 的 companion 魔法标识（main.py SOURCE_COMPANION_PLUGIN）：命中后工具
+# 返回 JSON（image_paths=服务器本地路径）且不发图，由调用方自己发。
+ANIMA_SOURCE_TAG = "我会永远陪着你"
+ANIMA_DRAW_TIMEOUT = 180.0
+
+
+def parse_anima_result(result: Any) -> str | None:
+    """解析 comfyui_draw 的返回，取第一张本地图路径；失败返回 None。
+
+    companion source 约定：成功 → {"status": "ok", "image_paths": [本地路径...]}；
+    失败 / NSFW 拦截等一律是纯文本（没有 JSON error 字段），所以解析不出
+    JSON 或 status 非 ok 都按失败处理。
+    """
+    payload: Any = result
+    if isinstance(result, str):
+        try:
+            payload = json.loads(result)
+        except (json.JSONDecodeError, ValueError):
+            return None
+    if not isinstance(payload, dict):
+        return None
+    if str(payload.get("status") or "") != "ok":
+        return None
+    for path in payload.get("image_paths") or []:
+        if isinstance(path, str) and path.strip():
+            return path.strip()
+    return None
+
+
+def _resolve_draw_handler(context: Any):
+    """从 AstrBot 工具管理器拿 comfyui_draw 的 handler（anima 官方跨插件契约）。"""
+    manager_getter = getattr(context, "get_llm_tool_manager", None)
+    if not callable(manager_getter):
+        return None
+    try:
+        manager = manager_getter()
+    except Exception:  # noqa: BLE001
+        return None
+    func_getter = getattr(manager, "get_func", None)
+    if not callable(func_getter):
+        return None
+    try:
+        tool = func_getter("comfyui_draw")
+    except Exception:  # noqa: BLE001
+        return None
+    if tool is None:
+        return None
+    handler = getattr(tool, "handler", None) or tool
+    return handler if callable(handler) else None
+
+
+async def fetch_anima_image(
+    context: Any, event: Any, *, prompt: str, workflow: str = ""
+) -> str | None:
+    """联动 ComfyUI萌绘出一张图，返回服务器本地文件路径（失败返回 None）。
+
+    只传中文画面描述；语种（中/英）与提示词类型（natural/danbooru）由所选
+    工作流绑定的底模配置决定（anima 内部会自动整理），这里不传风格参数。
+    event 用投递窗口最近一次真实用户消息事件（anima 侧必需）。
+    """
+    handler = _resolve_draw_handler(context)
+    if handler is None:
+        logger.info("mine_chat: 未找到 comfyui_draw 工具，ComfyUI萌绘联动不可用")
+        return None
+    if event is None:
+        logger.info("mine_chat: 没有可用的会话事件，跳过 anima 出图")
+        return None
+    kwargs: dict[str, Any] = {"prompt": prompt, "source": ANIMA_SOURCE_TAG}
+    if workflow.strip():
+        kwargs["workflow"] = workflow.strip()
+    try:
+        result = await asyncio.wait_for(handler(event, **kwargs), timeout=ANIMA_DRAW_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("mine_chat: anima 出图超时（>%.0fs），本次不配图", ANIMA_DRAW_TIMEOUT)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mine_chat: anima 出图异常: %s", exc)
+        return None
+    path = parse_anima_result(result)
+    if not path:
+        logger.info("mine_chat: anima 未产出图片（%s）", str(result)[:120])
+    return path
+
+
+# --------------------------------------------------------------------------- #
+# 联动萌萌表情包（moe_meme）取图
+# --------------------------------------------------------------------------- #
+_MEME_EXTS = {"png", "gif", "jpg", "jpeg", "webp"}
+
+
+def meme_cache_filename(sticker_id: str, fmt: str) -> str:
+    """表情缓存文件名：id 清洗 + 扩展名白名单。"""
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(sticker_id or "").strip())[:64]
+    if not safe:
+        safe = "sticker"
+    ext = str(fmt or "png").strip().lower().lstrip(".")
+    if ext not in _MEME_EXTS:
+        ext = "png"
+    return f"{safe}.{ext}"
+
+
+async def fetch_meme_image(token: str, cache_dir: str) -> str | None:
+    """从萌萌表情包的数据源随机拉一张表情，落本地缓存后返回路径。
+
+    moe_meme 没有跨插件 API，这里直接复用其数据源模块
+    astrbot_plugin_moe_meme.wuwa_source（只依赖 aiohttp）。票券链约
+    16 分钟有效，所以必须下载落盘后再发本地文件，绝不发远端 URL。
+    """
+    try:
+        module = importlib.import_module("astrbot_plugin_moe_meme.wuwa_source")
+    except Exception:  # noqa: BLE001 - 未安装表情包插件
+        logger.info("mine_chat: 未安装 astrbot_plugin_moe_meme，表情联动不可用")
+        return None
+    source_cls = getattr(module, "WuwaSource", None)
+    if source_cls is None:
+        logger.warning("mine_chat: moe_meme 的 wuwa_source 结构变化，表情联动不可用")
+        return None
+
+    source = None
+    sticker = None
+    data = None
+    try:
+        source = source_cls(token=token or "")
+        sticker = await asyncio.wait_for(source.random_sticker(None), timeout=25.0)
+        data = await asyncio.wait_for(source.download(sticker), timeout=30.0)
+    except Exception as exc:  # noqa: BLE001 - SourceError / 超时 / 网络错误统一降级
+        logger.info("mine_chat: 表情包拉取失败: %s", exc)
+        return None
+    finally:
+        close = getattr(source, "close", None)
+        if callable(close):
+            try:
+                await close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    filename = meme_cache_filename(
+        getattr(sticker, "sticker_id", ""), getattr(sticker, "fmt", "")
+    )
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        path = os.path.join(cache_dir, filename)
+        with open(path, "wb") as handle:
+            handle.write(data or b"")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mine_chat: 表情落盘失败: %s", exc)
+        return None
+    return path
 
 
 def split_segments(text: str, max_segments: int) -> list[str]:

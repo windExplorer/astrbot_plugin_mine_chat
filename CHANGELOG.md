@@ -1,5 +1,50 @@
 # 更新日志
 
+## v1.0.8（配图后端扩展：联动 ComfyUI萌绘出图、联动萌萌表情包）
+
+**需求**：①发图联动 comfyui-anima 插件，可指定工作流（语种与提示词类型），不再只用图库的图；
+②联动表情包插件，概率发表情。
+
+**调研结论（接入方式的事实依据）**：
+- anima 无 `get_xxx_api` 式接口，其官方跨插件契约是 **LLM 工具 `comfyui_draw` 的 handler
+  可直接 `await`**（`docs/cross-plugin-draw-guide.md`）：传 `source="我会永远陪着你"`
+  （companion 魔法值）时工具返回 JSON `{"status":"ok","image_paths":[服务器本地路径...]}`
+  且**不自己发图**，由调用方发送；失败时返回纯文本（无 JSON error）。
+- 语种（中/英）与提示词类型（natural/danbooru）**不是调用参数**，而是 anima 里
+  按工作流绑定的底模配置（`prompt_style` / `priority_lang`）生效——调用方只传
+  中文画面描述即可，因此「指定语种和提示词类型」通过「指定工作流」实现。
+- moe_meme 无跨插件 API，但其数据源模块 `wuwa_source` 只依赖 aiohttp；票券链
+  约 16 分钟有效，必须下载落盘后发本地文件。
+
+### 新增
+
+- 配置 `proactive.image_backend`（默认 `local` 保持向后兼容）：
+  `local`（本地图库，原有行为）/ `anima`（联动萌绘出图）/ `meme`（联动萌萌表情包）；
+  掷骰概率与每日配图上限对三种后端一致。
+- **anima 后端**：经 `context.get_llm_tool_manager().get_func("comfyui_draw")` 拿 handler，
+  `await handler(event, prompt=<当前日程片段+碎片>, source="我会永远陪着你", workflow=...)`，
+  180s 超时；解析出 `image_paths[0]` 后附在主动消息里发送。
+  新增配置 `image_workflow`（工作流名，留空用萌绘默认）。
+  event 复用投递窗口最近一次真实用户消息（新增 `remember_event()` 记录；重启后
+  未聊过天则跳过出图并提示一次）。anima 出图期间的插嘴由既有 `last_user_at` 检测兜住。
+- **meme 后端**：动态导入 `astrbot_plugin_moe_meme.wuwa_source`（不依赖 AstrBot 运行时），
+  随机拉一张 → 下载 → 落盘到 `data/plugin_data/astrbot_plugin_mine_chat/cache/memes/`
+  → 发本地文件（绝不发票券链 URL）。新增配置 `meme_token`（与萌萌表情包共用凭据，
+  Bearer 头预留，留空匿名）。
+- 纯函数：`parse_anima_result`（JSON / 失败文本解析）、`meme_cache_filename`
+  （id 清洗 + 扩展名白名单）。
+
+### 边界说明
+
+- 未装 anima / moe_meme、或 moe_meme 的 `wuwa_source` 结构变化时，对应后端自动不可用
+  （日志提示一次），主动消息退化为纯文本，不影响主链路。
+- 借用 moe_meme 图源与站方 CC BY-NC-SA 的「仅本机器人发送用」语义一致，不做二次分发。
+
+### 测试
+
+- `tests/test_core_logic.py` 扩到 120 项：companion JSON / dict / 失败文本 / 空路径解析、
+  表情缓存文件名清洗与扩展名白名单。
+
 ## v1.0.7（每日作息浮动：偶尔熬夜、偶尔赖床）
 
 **需求**：起床时间和睡眠时间可以浮动一下，偶尔熬点夜和赖床。

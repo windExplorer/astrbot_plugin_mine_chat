@@ -178,9 +178,12 @@ class Settings:
     proactive_model: str = ""
     proactive_extra_instruction: str = ""
 
-    # 主动消息配图（本地图库模式）
+    # 主动消息配图（本地图库 / ComfyUI萌绘联动 / 萌萌表情包联动）
     proactive_image_enabled: bool = False
+    proactive_image_backend: str = "local"
     proactive_image_dir: str = ""
+    proactive_image_workflow: str = ""
+    proactive_meme_token: str = ""
     proactive_image_probability: float = 0.25
     proactive_image_max_per_day: int = 2
 
@@ -360,7 +363,16 @@ class Settings:
             proactive_image_enabled=to_bool(
                 pick(proactive, "image_enabled", "proactive_image_enabled", False), False
             ),
+            proactive_image_backend=to_str(
+                pick(proactive, "image_backend", "proactive_image_backend", "local"), "local"
+            ),
             proactive_image_dir=to_str(pick(proactive, "image_dir", "proactive_image_dir", "")),
+            proactive_image_workflow=to_str(
+                pick(proactive, "image_workflow", "proactive_image_workflow", "")
+            ),
+            proactive_meme_token=to_str(
+                pick(proactive, "meme_token", "proactive_meme_token", "")
+            ),
             proactive_image_probability=to_float(
                 pick(proactive, "image_probability", "proactive_image_probability", 0.25),
                 0.25,

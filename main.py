@@ -139,6 +139,7 @@ class MineChatPlugin(Star):
             self.schedule_service,
             self.settings,
             default_image_dir=os.path.join(self.data_dir, "images"),
+            meme_cache_dir=os.path.join(self.data_dir, "cache", "memes"),
         )
 
         self._terminating = False
@@ -264,6 +265,8 @@ class MineChatPlugin(Star):
             )
             if primary == umo:
                 await self.proactive.note_user_activity(persona_id)
+                # anima 出图需要一个真实的会话事件；存投递窗口最近一次。
+                self.proactive.remember_event(event)
             self.proactive.kick()
             if settings.schedule_enabled:
                 self._ensure_plan_background(persona_id, umo)
