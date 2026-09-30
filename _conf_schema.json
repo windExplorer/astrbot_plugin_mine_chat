@@ -287,17 +287,17 @@
         "default": ""
       },
       "image_enabled": {
-        "description": "主动消息可以配图",
-        "hint": "开启后，主动消息有一定概率随附一张图片。图源由「配图方式」决定：联动 ComfyUI萌绘出图、本地图库、或联动萌萌表情包。",
+        "description": "主动消息可以随附生图",
+        "hint": "开启后，主动消息有一定概率随附一张「角色此刻生活场景」的图。生图与表情包是两条独立通道（各自开关、概率与每日计数）。",
         "type": "bool",
         "default": false
       },
       "image_backend": {
-        "description": "配图方式",
-        "hint": "anima = 联动 ComfyUI萌绘（comfyui_draw）现场出图，画面取自当前日程片段，语种（中/英）与提示词类型（natural/danbooru）由所选工作流绑定的底模配置决定；local = 本地图库随机挑一张；meme = 联动萌萌表情包随机发一张。",
+        "description": "生图方式",
+        "hint": "anima = 联动 ComfyUI萌绘（comfyui_draw）现场出图，画面取自当前日程片段，语种（中/英）与提示词类型（natural/danbooru）由所选工作流绑定的底模配置决定；local = 本地图库随机挑一张。",
         "type": "string",
-        "options": ["local", "anima", "meme"],
-        "labels": ["本地图库", "ComfyUI萌绘出图", "萌萌表情包"],
+        "options": ["local", "anima"],
+        "labels": ["本地图库", "ComfyUI萌绘出图"],
         "default": "local"
       },
       "image_workflow": {
@@ -306,17 +306,35 @@
         "type": "string",
         "default": ""
       },
-      "meme_token": {
-        "description": "表情包 API Token",
-        "hint": "仅表情包方式有效：emoji.wuwa.games 的 API Token（与萌萌表情包插件共用同一凭据，站方未公布携带方式，按 Bearer 头预留）。留空 = 匿名访问。",
-        "type": "string",
-        "default": ""
-      },
       "image_dir": {
         "description": "本地图库目录",
         "hint": "仅本地图库方式有效：存放候选图片的文件夹绝对路径，支持 jpg / jpeg / png / webp / gif。留空 = 使用插件数据目录下的 images 文件夹。文件名（去掉扩展名）会作为画面线索告诉模型。",
         "type": "string",
         "default": ""
+      },
+      "sticker_enabled": {
+        "description": "主动消息可以发表情包",
+        "hint": "开启后，主动消息有一定概率随附一张表情包（联动萌萌表情包的数据源）。表情包与生图是两条独立通道，可同时开启；同一条消息两者都命中时生图优先。",
+        "type": "bool",
+        "default": false
+      },
+      "sticker_token": {
+        "description": "表情包 API Token",
+        "hint": "emoji.wuwa.games 的 API Token（与萌萌表情包插件共用同一凭据，站方未公布携带方式，按 Bearer 头预留）。留空 = 匿名访问。",
+        "type": "string",
+        "default": ""
+      },
+      "sticker_probability": {
+        "description": "表情包概率",
+        "hint": "每次主动消息命中表情包的概率（0~1）。与生图概率独立掷骰。",
+        "type": "float",
+        "default": 0.15
+      },
+      "sticker_max_per_day": {
+        "description": "每日表情包上限",
+        "hint": "每天最多随主动消息发几张表情（0 = 不限制）。与生图的每日上限独立计数。",
+        "type": "int",
+        "default": 2
       },
       "image_probability": {
         "description": "配图概率",

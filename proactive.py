@@ -395,6 +395,11 @@ class ProactiveService:
 
         before_user_at = state.get("last_user_at")
         image_plan = await self._plan_image(settings, state, info)
+        # 表情包是独立通道（独立概率/独立计数）；生图命中时让位，同一条消息只附一张图。
+        sticker_path = ""
+        if image_plan is None:
+            sticker = await self._plan_sticker(settings, state)
+            sticker_path = str(sticker or "")
 
         try:
             texts = await self.composer.generate(
@@ -434,7 +439,7 @@ class ProactiveService:
             umo,
             texts,
             delay=settings.proactive_segment_delay,
-            image_path=image_path or None,
+            image_path=image_path or sticker_path or None,
         )
         if not delivered:
             await self._record(persona_id, "error", "send_failed", umo)
@@ -457,6 +462,13 @@ class ProactiveService:
                 else 1
             )
             extra_updates["images_date"] = today
+        if sticker_path:
+            extra_updates["stickers_today"] = (
+                int(fresh.get("stickers_today") or 0) + 1
+                if fresh.get("stickers_date") == today
+                else 1
+            )
+            extra_updates["stickers_date"] = today
         await self.store.upsert_proactive_state(
             persona_id,
             primary_umo=umo,
@@ -518,8 +530,8 @@ class ProactiveService:
             event = self._last_event
             if event is None:
                 self._warn_image(
-                    "配图方式为 ComfyUI萌绘，但还没有任何用户消息事件可复用——"
-                    "先和角色聊一句再开启配图"
+                    "生图方式为 ComfyUI萌绘，但还没有任何用户消息事件可复用——"
+                    "先和角色聊一句再开启生图"
                 )
                 return None
             current = info.get("current") or info.get("previous") or {}
@@ -538,20 +550,12 @@ class ProactiveService:
                 return None
             return {"kind": "anima", "path": path, "desc": ""}
 
-        if backend == "meme":
-            path = await fetch_meme_image(
-                settings.proactive_meme_token, self._meme_cache_dir
-            )
-            if not path:
-                return None
-            return {"kind": "meme", "path": path, "desc": ""}
-
         # 本地图库（默认后端）
         directory = str(settings.proactive_image_dir or "").strip() or self._default_image_dir
         files = list_image_files(directory)
         if not files:
             self._warn_image(
-                f"配图方式为本地图库，但图库目录为空或不可读（{directory or '未配置'}）——"
+                f"生图方式为本地图库，但图库目录为空或不可读（{directory or '未配置'}）——"
                 "把图片放进去即可，无需重启"
             )
             return None
@@ -559,6 +563,33 @@ class ProactiveService:
         if not path:
             return None
         return {"kind": "local", "path": path, "desc": image_desc_from_path(path)}
+
+    async def _plan_sticker(
+        self, settings: Settings, state: dict[str, Any]
+    ) -> str | None:
+        """表情包通道（与生图独立）：命中则返回本地缓存路径。
+
+        调用方保证：生图命中时不再调用本函数（同一条消息只附一张图，
+        生图优先——表情包让位且不消耗当日计数）。
+        """
+        if not settings.proactive_sticker_enabled:
+            return None
+        if settings.proactive_sticker_probability <= 0:
+            return None
+        if random.random() > settings.proactive_sticker_probability:
+            return None
+
+        today = datetime.now().date().isoformat()
+        used = (
+            int(state.get("stickers_today") or 0) if state.get("stickers_date") == today else 0
+        )
+        limit = settings.proactive_sticker_max_per_day
+        if limit > 0 and used >= limit:
+            return None
+
+        return await fetch_meme_image(
+            settings.proactive_sticker_token, self._meme_cache_dir
+        )
 
     # ---------------------------------------------------------------- #
     # 排期
@@ -667,6 +698,9 @@ class ProactiveService:
         images_today = (
             int(state.get("images_today") or 0) if state.get("images_date") == today else 0
         )
+        stickers_today = (
+            int(state.get("stickers_today") or 0) if state.get("stickers_date") == today else 0
+        )
         next_at = state.get("next_at")
         next_text = "-"
         if next_at:
@@ -682,6 +716,9 @@ class ProactiveService:
             "images_today": images_today,
             "image_max_per_day": settings.proactive_image_max_per_day,
             "image_enabled": settings.proactive_image_enabled,
+            "stickers_today": stickers_today,
+            "sticker_max_per_day": settings.proactive_sticker_max_per_day,
+            "sticker_enabled": settings.proactive_sticker_enabled,
             "unanswered": int(state.get("unanswered") or 0),
             "max_unanswered": settings.proactive_max_unanswered,
             "last_sent_at": state.get("last_sent_at"),

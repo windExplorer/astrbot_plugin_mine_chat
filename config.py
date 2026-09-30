@@ -178,14 +178,19 @@ class Settings:
     proactive_model: str = ""
     proactive_extra_instruction: str = ""
 
-    # 主动消息配图（本地图库 / ComfyUI萌绘联动 / 萌萌表情包联动）
+    # 主动消息生图（本地图库 / ComfyUI萌绘联动）——「我此刻生活的画面」
     proactive_image_enabled: bool = False
     proactive_image_backend: str = "local"
     proactive_image_dir: str = ""
     proactive_image_workflow: str = ""
-    proactive_meme_token: str = ""
     proactive_image_probability: float = 0.25
     proactive_image_max_per_day: int = 2
+
+    # 主动消息表情包（萌萌表情包联动）——「情绪反应贴图」，与生图独立计数
+    proactive_sticker_enabled: bool = False
+    proactive_sticker_token: str = ""
+    proactive_sticker_probability: float = 0.15
+    proactive_sticker_max_per_day: int = 2
 
     # 提示词覆盖
     prompt_plan_override: str = ""
@@ -370,9 +375,6 @@ class Settings:
             proactive_image_workflow=to_str(
                 pick(proactive, "image_workflow", "proactive_image_workflow", "")
             ),
-            proactive_meme_token=to_str(
-                pick(proactive, "meme_token", "proactive_meme_token", "")
-            ),
             proactive_image_probability=to_float(
                 pick(proactive, "image_probability", "proactive_image_probability", 0.25),
                 0.25,
@@ -381,6 +383,26 @@ class Settings:
             ),
             proactive_image_max_per_day=to_int(
                 pick(proactive, "image_max_per_day", "proactive_image_max_per_day", 2),
+                2,
+                0,
+                50,
+            ),
+            proactive_sticker_enabled=to_bool(
+                pick(proactive, "sticker_enabled", "proactive_sticker_enabled", False),
+                False,
+            ),
+            proactive_sticker_token=to_str(
+                pick(proactive, "sticker_token", "proactive_sticker_token", "")
+                or get("proactive_meme_token")
+            ),
+            proactive_sticker_probability=to_float(
+                pick(proactive, "sticker_probability", "proactive_sticker_probability", 0.15),
+                0.15,
+                0.0,
+                1.0,
+            ),
+            proactive_sticker_max_per_day=to_int(
+                pick(proactive, "sticker_max_per_day", "proactive_sticker_max_per_day", 2),
                 2,
                 0,
                 50,
@@ -455,6 +477,7 @@ _LEGACY_KEY_MAP: tuple[tuple[str, str, str], ...] = (
     ("proactive_image_dir", "proactive", "image_dir"),
     ("proactive_image_probability", "proactive", "image_probability"),
     ("proactive_image_max_per_day", "proactive", "image_max_per_day"),
+    ("proactive_meme_token", "proactive", "sticker_token"),
     ("prompt_plan_override", "prompt", "plan"),
     ("prompt_proactive_override", "prompt", "proactive"),
     ("log_retention", "advanced", "log_retention"),

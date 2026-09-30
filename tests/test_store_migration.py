@@ -101,7 +101,7 @@ async def run(tmp: str, c: Checker) -> None:
     state = await migrated.get_proactive_state("小满")
     c.equal("数据未被破坏", int(state["images_today"]), 1)
     version = await migrated.get_meta("schema_version")
-    c.equal("schema_version 已更新", version, "2")
+    c.equal("schema_version 已更新", version, "3")
 
     # ---- 附带：日志写入与清理 ------------------------------------------
     print("\n[4] 日志")

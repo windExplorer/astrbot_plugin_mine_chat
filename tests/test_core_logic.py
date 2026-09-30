@@ -123,6 +123,16 @@ def test_settings(c: Checker) -> None:
     selected = config_mod.Settings.from_config({"active_persona": "小满"})
     c.check("新键生效", selected.persona_selected())
 
+    # 表情包通道（与生图独立）：开关、独立概率与计数、旧键 token 兼容
+    sticker = config_mod.Settings.from_config(
+        {"proactive_meme_token": "旧token", "proactive_sticker_enabled": True}
+    )
+    c.equal("表情包 token 旧键兼容", sticker.proactive_sticker_token, "旧token")
+    c.check("表情包开关", sticker.proactive_sticker_enabled)
+    c.equal("表情包独立概率", sticker.proactive_sticker_probability, 0.15)
+    c.equal("表情包独立日限", sticker.proactive_sticker_max_per_day, 2)
+    c.equal("生图后端不再含表情包", sticker.proactive_image_backend, "local")
+
     # 嵌套分组读取（v1.0.4 起的配置结构）
     nested = config_mod.Settings.from_config(
         {"persona": {"active": "嵌套人格", "auto_bind": True}, "advanced": {"log_retention": 500}}

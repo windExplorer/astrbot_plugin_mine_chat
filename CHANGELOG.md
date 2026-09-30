@@ -1,5 +1,35 @@
 # 更新日志
 
+## v1.0.10（表情包与生图拆成两条独立通道）
+
+**问题（用户反馈）**：v1.0.8 把表情包塞进了「配图方式」的三选一里——表情包占了生图的
+概率与每日配图额度，选了表情包就不能生图。但两者语义完全不同：生图是「我此刻生活的
+画面」（联动 ComfyUI萌绘 / 本地图库），表情包是「情绪反应贴图」（联动萌萌表情包）。
+
+### 行为变更
+
+- **两条独立通道**，各自开关、独立概率、独立每日计数，可同时开启：
+  - 生图通道：`proactive.image_enabled` + `image_backend`（local / anima，**移除 meme 选项**）
+    + `image_probability` + `image_max_per_day`；
+  - 表情包通道（新增）：`proactive.sticker_enabled` + `sticker_probability`（默认 0.15）
+    + `sticker_max_per_day`（默认 2）+ `sticker_token`（原 `meme_token` 更名，旧值自动沿用）。
+- 同一条主动消息只附一张图：**生图命中时表情包让位**（不掷骰、不消耗当日表情包计数）；
+  生图未命中才掷表情包。
+- 存储 schema 2 → 3：`proactive_state` 新增 `stickers_today` / `stickers_date`
+  （旧库启动自动迁移）；主动状态与控制台状态里表情包与生图分开计数。
+
+### 兼容性
+
+- v1.0.8 配过 `image_backend = meme` 的：`image_backend` 回落 `local`，表情包改由
+  `sticker_enabled` 独立开启；`meme_token` 值自动迁移到 `sticker_token`。
+
+### 测试
+
+- `tests/test_core_logic.py` 扩到 134 项：表情包配置归一、`meme_token` 旧键兼容、
+  独立概率与日限；存储迁移测试覆盖 v1 → v3。
+- 修复开发期回归：`from_config` 残留已删除字段 `proactive_meme_token` 的赋值导致
+  Settings 构造直接 TypeError——由自检第 2 组用例立即暴露。
+
 ## v1.0.9（修复：日程没有注入到对话——主窗口被「未绑定」误拦 + 注入原因日志化）
 
 **问题（用户实测暴露）**：日程已经排好，但问 bot「今天有什么安排」它说没有——注入链路

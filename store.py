@@ -14,12 +14,14 @@ import json
 import time
 from typing import Any, Callable, Iterable, Sequence
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # 只做「加列」这类幂等迁移；新装的库 DDL 已含新列，重复 ALTER 报错时忽略。
 _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE proactive_state ADD COLUMN images_today INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE proactive_state ADD COLUMN images_date TEXT",
+    "ALTER TABLE proactive_state ADD COLUMN stickers_today INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE proactive_state ADD COLUMN stickers_date TEXT",
 )
 
 _DDL: tuple[str, ...] = (
@@ -92,6 +94,8 @@ _DDL: tuple[str, ...] = (
         enabled       INTEGER NOT NULL DEFAULT 1,
         images_today  INTEGER NOT NULL DEFAULT 0,
         images_date   TEXT,
+        stickers_today INTEGER NOT NULL DEFAULT 0,
+        stickers_date  TEXT,
         updated_at    REAL
     )
     """,
@@ -570,6 +574,8 @@ class Store:
         "enabled",
         "images_today",
         "images_date",
+        "stickers_today",
+        "stickers_date",
     )
 
     async def get_proactive_state(self, persona_id: str) -> dict[str, Any]:
@@ -587,6 +593,7 @@ class Store:
         state.setdefault("sent_today", 0)
         state.setdefault("unanswered", 0)
         state.setdefault("images_today", 0)
+        state.setdefault("stickers_today", 0)
         state["enabled"] = 1 if state.get("enabled") is None else int(state["enabled"])
         return state
 
