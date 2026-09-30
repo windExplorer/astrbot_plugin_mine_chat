@@ -14,7 +14,13 @@ import json
 import time
 from typing import Any, Callable, Iterable, Sequence
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# 只做「加列」这类幂等迁移；新装的库 DDL 已含新列，重复 ALTER 报错时忽略。
+_MIGRATIONS: tuple[str, ...] = (
+    "ALTER TABLE proactive_state ADD COLUMN images_today INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE proactive_state ADD COLUMN images_date TEXT",
+)
 
 _DDL: tuple[str, ...] = (
     """
@@ -84,6 +90,8 @@ _DDL: tuple[str, ...] = (
         unanswered    INTEGER NOT NULL DEFAULT 0,
         last_user_at  REAL,
         enabled       INTEGER NOT NULL DEFAULT 1,
+        images_today  INTEGER NOT NULL DEFAULT 0,
+        images_date   TEXT,
         updated_at    REAL
     )
     """,
@@ -133,12 +141,25 @@ class Store:
             for statement in _DDL:
                 conn.execute(statement)
             conn.commit()
+            # 旧库升级：v1.0.x 的 proactive_state 没有 images_today / images_date。
+            # 新装的库已在 DDL 里带出这两列，ALTER 会报 duplicate，忽略即可。
+            for statement in _MIGRATIONS:
+                try:
+                    conn.execute(statement)
+                    conn.commit()
+                except Exception:  # noqa: BLE001 - 列已存在
+                    try:
+                        conn.rollback()
+                    except Exception:  # noqa: BLE001
+                        pass
             current = conn.execute(
                 "SELECT value FROM meta WHERE key='schema_version'"
             ).fetchone()
-            if current is None:
+            if current is None or str(current["value"]) != str(SCHEMA_VERSION):
+                # 迁移后必须回写版本号：只 ALTER 列不记版本，下次升级无法判断基线。
                 conn.execute(
-                    "INSERT INTO meta(key, value) VALUES('schema_version', ?)",
+                    "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     (str(SCHEMA_VERSION),),
                 )
             conn.commit()
@@ -547,6 +568,8 @@ class Store:
         "unanswered",
         "last_user_at",
         "enabled",
+        "images_today",
+        "images_date",
     )
 
     async def get_proactive_state(self, persona_id: str) -> dict[str, Any]:
@@ -563,6 +586,7 @@ class Store:
             state.setdefault(key, None)
         state.setdefault("sent_today", 0)
         state.setdefault("unanswered", 0)
+        state.setdefault("images_today", 0)
         state["enabled"] = 1 if state.get("enabled") is None else int(state["enabled"])
         return state
 

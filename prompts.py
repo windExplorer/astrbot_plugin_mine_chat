@@ -148,6 +148,12 @@ UNANSWERED_HINT_TEMPLATE = """
 也不要表现出委屈或抱怨。
 """
 
+IMAGE_HINT_TEMPLATE = """
+【随图说明】这条消息发出时会随附一张图片，图片内容大致是「{image_desc}」。
+这是你随手分享的图。文字里不要描述图片内容，也不要说「给你看张图」「看图」这类话，
+就像平时发消息一样自然说话即可。
+"""
+
 
 def build_proactive_system(
     *,
@@ -155,12 +161,13 @@ def build_proactive_system(
     max_segments: int,
     unanswered: int,
     extra: str,
+    image_hint: str = "",
 ) -> str:
     if unanswered >= 2:
         unanswered_hint = UNANSWERED_HINT_TEMPLATE.replace("{unanswered}", str(unanswered))
     else:
         unanswered_hint = ""
-    return fill(
+    system = fill(
         PROACTIVE_SYSTEM_TEMPLATE,
         {
             "character_name": character_name or "你扮演的角色",
@@ -168,6 +175,17 @@ def build_proactive_system(
             "unanswered_hint": unanswered_hint,
             "extra": f"\n额外要求：{extra}" if extra else "",
         },
+    )
+    if image_hint:
+        system = f"{system}{image_hint}"
+    return system
+
+
+def build_image_hint(image_desc: str) -> str:
+    """「这次带图」的提示块。image_desc 为空时用中性描述。"""
+    return fill(
+        IMAGE_HINT_TEMPLATE,
+        {"image_desc": image_desc.strip() or "一张你手机里的生活随拍"},
     )
 
 

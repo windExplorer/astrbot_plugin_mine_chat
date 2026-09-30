@@ -82,6 +82,10 @@ const GROUP_META: { name: string; description: string; keys: string[] }[] = [
       "proactive_history_messages",
       "proactive_model",
       "proactive_extra_instruction",
+      "proactive_image_enabled",
+      "proactive_image_dir",
+      "proactive_image_probability",
+      "proactive_image_max_per_day",
     ],
   },
   {

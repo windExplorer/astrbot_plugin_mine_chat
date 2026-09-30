@@ -260,6 +260,30 @@
     "type": "text",
     "default": ""
   },
+  "proactive_image_enabled": {
+    "description": "主动消息可以配图",
+    "hint": "开启后，主动消息有一定概率随附一张图片。图片来自下面的图库目录（把用 comfyui-anima / nai 等生成好的图放进去即可）。模型自己不会在线生成图片。",
+    "type": "bool",
+    "default": false
+  },
+  "proactive_image_dir": {
+    "description": "图库目录",
+    "hint": "存放候选图片的文件夹绝对路径，支持 jpg / jpeg / png / webp / gif。留空 = 使用插件数据目录下的 images 文件夹（data/plugin_data/astrbot_plugin_mine_chat/images，不存在会自动提示）。文件名（去掉扩展名）会作为画面线索告诉模型，例如「做饭.png」会让它知道图大概是做饭的场景。",
+    "type": "string",
+    "default": ""
+  },
+  "proactive_image_probability": {
+    "description": "配图概率",
+    "hint": "每次主动消息命中这张图的概率（0~1）。0.25 = 大约每四次主动有一次带图。过高会显得像图库机器人。",
+    "type": "float",
+    "default": 0.25
+  },
+  "proactive_image_max_per_day": {
+    "description": "每日配图上限",
+    "hint": "每天最多随主动消息发几张图（0 = 不限制）。与「每日主动上限」独立计数。",
+    "type": "int",
+    "default": 2
+  },
 
   "prompt_plan_override": {
     "description": "自定义日程生成提示词",

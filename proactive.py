@@ -19,7 +19,12 @@ from astrbot.api import logger
 
 from . import llm as llm_mod
 from .config import Settings
-from .proactive_gen import ProactiveComposer
+from .proactive_gen import (
+    ProactiveComposer,
+    choose_image_file,
+    image_desc_from_path,
+    list_image_files,
+)
 from .schedule_view import is_sleeping, locate, now_minutes_for
 
 _SKIP_LOG_THROTTLE_SECONDS = 600.0
@@ -53,6 +58,7 @@ class ProactiveService:
         resolver: Any,
         schedule: Any,
         settings_getter,
+        default_image_dir: str = "",
     ) -> None:
         self.context = context
         self.store = store
@@ -66,6 +72,8 @@ class ProactiveService:
         self._terminating = False
         self._locks: dict[str, asyncio.Lock] = {}
         self._skip_log_at: dict[tuple[str, str], float] = {}
+        self._default_image_dir = default_image_dir
+        self._image_dir_warned = False
 
     # ---------------------------------------------------------------- #
     # 生命周期
@@ -370,6 +378,7 @@ class ProactiveService:
             return False, "no_umo"
 
         before_user_at = state.get("last_user_at")
+        image_plan = self._plan_image(settings, state)
 
         try:
             texts = await self.composer.generate(
@@ -379,6 +388,7 @@ class ProactiveService:
                 previous_item=info.get("previous"),
                 seed=str(info.get("seed") or ""),
                 state=state,
+                image_plan=image_plan,
             )
         except llm_mod.LLMError as exc:
             logger.warning("mine_chat: 主动消息生成失败 persona=%s: %s", persona_id, exc)
@@ -403,8 +413,12 @@ class ProactiveService:
             await self._reschedule(persona_id)
             return False, "interrupted"
 
+        image_path = str(image_plan.get("path") or "") if image_plan else ""
         delivered = await self.composer.deliver(
-            umo, texts, delay=settings.proactive_segment_delay
+            umo,
+            texts,
+            delay=settings.proactive_segment_delay,
+            image_path=image_path or None,
         )
         if not delivered:
             await self._record(persona_id, "error", "send_failed", umo)
@@ -419,6 +433,14 @@ class ProactiveService:
             int(fresh.get("sent_today") or 0) if fresh.get("sent_date") == today else 0
         )
         content = "\n".join(texts)
+        extra_updates: dict[str, Any] = {}
+        if image_plan and image_path:
+            extra_updates["images_today"] = (
+                int(fresh.get("images_today") or 0) + 1
+                if fresh.get("images_date") == today
+                else 1
+            )
+            extra_updates["images_date"] = today
         await self.store.upsert_proactive_state(
             persona_id,
             primary_umo=umo,
@@ -427,6 +449,7 @@ class ProactiveService:
             last_sent_at=time.time(),
             last_message=content,
             unanswered=int(fresh.get("unanswered") or 0) + 1,
+            **extra_updates,
         )
         await self._record(persona_id, "send", "ok", umo, content)
         logger.info(
@@ -437,6 +460,41 @@ class ProactiveService:
         )
         await self._reschedule(persona_id)
         return True, "ok"
+
+    def _plan_image(self, settings: Settings, state: dict[str, Any]) -> dict[str, Any] | None:
+        """决定这次主动消息要不要带图、带哪张（生成前调用，提示词需要知道）。"""
+        if not settings.proactive_image_enabled:
+            return None
+        if settings.proactive_image_probability <= 0:
+            return None
+        if random.random() > settings.proactive_image_probability:
+            return None
+
+        now_dt = datetime.now()
+        today = now_dt.date().isoformat()
+        used = (
+            int(state.get("images_today") or 0) if state.get("images_date") == today else 0
+        )
+        limit = settings.proactive_image_max_per_day
+        if limit > 0 and used >= limit:
+            return None
+
+        directory = str(settings.proactive_image_dir or "").strip() or self._default_image_dir
+        files = list_image_files(directory)
+        if not files:
+            if not self._image_dir_warned:
+                self._image_dir_warned = True
+                logger.warning(
+                    "mine_chat: 已开启主动消息配图，但图库目录为空或不可读（%s）——"
+                    "把图片放进去即可，无需重启",
+                    directory or "（未配置）",
+                )
+            return None
+
+        path = choose_image_file(files)
+        if not path:
+            return None
+        return {"path": path, "desc": image_desc_from_path(path)}
 
     # ---------------------------------------------------------------- #
     # 排期
@@ -542,6 +600,9 @@ class ProactiveService:
         sent_today = (
             int(state.get("sent_today") or 0) if state.get("sent_date") == today else 0
         )
+        images_today = (
+            int(state.get("images_today") or 0) if state.get("images_date") == today else 0
+        )
         next_at = state.get("next_at")
         next_text = "-"
         if next_at:
@@ -554,6 +615,9 @@ class ProactiveService:
             "next_at_text": next_text,
             "sent_today": sent_today,
             "daily_limit": settings.proactive_daily_limit,
+            "images_today": images_today,
+            "image_max_per_day": settings.proactive_image_max_per_day,
+            "image_enabled": settings.proactive_image_enabled,
             "unanswered": int(state.get("unanswered") or 0),
             "max_unanswered": settings.proactive_max_unanswered,
             "last_sent_at": state.get("last_sent_at"),

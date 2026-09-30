@@ -173,6 +173,12 @@ class Settings:
     proactive_model: str = ""
     proactive_extra_instruction: str = ""
 
+    # 主动消息配图（本地图库模式）
+    proactive_image_enabled: bool = False
+    proactive_image_dir: str = ""
+    proactive_image_probability: float = 0.25
+    proactive_image_max_per_day: int = 2
+
     # 提示词覆盖
     prompt_plan_override: str = ""
     prompt_proactive_override: str = ""
@@ -262,6 +268,14 @@ class Settings:
             ),
             proactive_model=to_str(get("proactive_model", "")),
             proactive_extra_instruction=to_str(get("proactive_extra_instruction", "")),
+            proactive_image_enabled=to_bool(get("proactive_image_enabled", False), False),
+            proactive_image_dir=to_str(get("proactive_image_dir", "")),
+            proactive_image_probability=to_float(
+                get("proactive_image_probability", 0.25), 0.25, 0.0, 1.0
+            ),
+            proactive_image_max_per_day=to_int(
+                get("proactive_image_max_per_day", 2), 2, 0, 50
+            ),
             prompt_plan_override=to_str(get("prompt_plan_override", "")),
             prompt_proactive_override=to_str(get("prompt_proactive_override", "")),
             log_retention=to_int(get("log_retention", 2000), 2000, 100, 100000),

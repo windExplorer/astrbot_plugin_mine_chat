@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import random
 from datetime import datetime
 from typing import Any
 
@@ -23,6 +25,45 @@ _WEEKDAY_NAMES = ("周一", "周二", "周三", "周四", "周五", "周六", "�
 _SEGMENT_SEPARATOR = "---"
 MAX_SEGMENT_CHARS = 200
 USER_PLACEHOLDER = "(主动发起)"
+
+IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
+
+
+# --------------------------------------------------------------------------- #
+# 本地图库（主动消息配图）
+# --------------------------------------------------------------------------- #
+def list_image_files(directory: str) -> list[str]:
+    """列出图库目录里的候选图片（返回绝对路径列表；目录不可读返回空）。"""
+    directory = str(directory or "").strip()
+    if not directory:
+        return []
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    result: list[str] = []
+    for name in names:
+        full = os.path.join(directory, name)
+        if not os.path.isfile(full):
+            continue
+        if os.path.splitext(name)[1].lower() not in IMAGE_EXTENSIONS:
+            continue
+        result.append(full)
+    return result
+
+
+def choose_image_file(files: list[str]) -> str | None:
+    if not files:
+        return None
+    return random.choice(files)
+
+
+def image_desc_from_path(path: str) -> str:
+    """用文件名（去掉扩展名）作为画面线索；纯数字名视为无语义，返回空串。"""
+    stem = os.path.splitext(os.path.basename(str(path)))[0].strip()
+    if not stem or stem.isdigit():
+        return ""
+    return stem[:60]
 
 
 def split_segments(text: str, max_segments: int) -> list[str]:
@@ -141,6 +182,7 @@ class ProactiveComposer:
         previous_item: dict[str, Any] | None,
         seed: str,
         state: dict[str, Any],
+        image_plan: dict[str, Any] | None = None,
     ) -> list[str]:
         settings: Settings = self._settings_getter()
         character_name = self.resolver.persona_display_name(persona_id)
@@ -172,6 +214,11 @@ class ProactiveComposer:
                 max_segments=settings.proactive_max_segments,
                 unanswered=unanswered,
                 extra=settings.proactive_extra_instruction,
+                image_hint=prompts.build_image_hint(
+                    str(image_plan.get("desc") or "")
+                )
+                if image_plan
+                else "",
             )
             if persona_prompt:
                 system = f"{system}\n\n【你的人物设定】\n{persona_prompt}"
@@ -197,12 +244,22 @@ class ProactiveComposer:
     # ---------------------------------------------------------------- #
     # 投递
     # ---------------------------------------------------------------- #
-    async def deliver(self, umo: str, texts: list[str], *, delay: float = 1.5) -> bool:
-        """发送消息；任一条未送达即视为整体失败（调用方不应写回历史）。"""
+    async def deliver(
+        self,
+        umo: str,
+        texts: list[str],
+        *,
+        delay: float = 1.5,
+        image_path: str | None = None,
+    ) -> bool:
+        """发送消息；任一条未送达即视为整体失败（调用方不应写回历史）。
+
+        ``image_path`` 非空时把图片附在最后一条消息里；图片组件构造失败就降级为纯文本。
+        """
         if not texts:
             return False
         try:
-            from astrbot.api.message_components import Plain
+            from astrbot.api.message_components import Image, Plain
             from astrbot.core.message.message_event_result import MessageChain
         except Exception as exc:  # noqa: BLE001 - 导入失败说明环境异常
             logger.error("mine_chat: 消息组件导入失败: %s", exc)
@@ -211,9 +268,16 @@ class ProactiveComposer:
         for index, text in enumerate(texts):
             if index > 0 and delay > 0:
                 await asyncio.sleep(delay)
+            components: list[Any] = [Plain(text)]
+            is_last = index == len(texts) - 1
+            if is_last and image_path:
+                try:
+                    components.append(Image.fromFileSystem(image_path))
+                except Exception as exc:  # noqa: BLE001 - 图坏了就发纯文本
+                    logger.warning("mine_chat: 图片组件构造失败，降级纯文本: %s", exc)
             try:
                 result = await self.context.send_message(
-                    umo, MessageChain([Plain(text)])
+                    umo, MessageChain(components)
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.error("mine_chat: 主动消息发送异常 umo=%s: %s", umo, exc)

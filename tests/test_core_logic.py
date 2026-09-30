@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import ast
 import os
+import random
 import re
 import sys
+import tempfile
 from datetime import date, datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -326,6 +328,51 @@ def test_scope_and_segments(c: Checker) -> None:
     c.equal("空输入返回空", split_segments("   ", 3), [])
 
 
+def test_images(c: Checker) -> None:
+    print("\n[7] 主动消息配图")
+    ns = load_defs(
+        "proactive_gen.py",
+        {
+            "IMAGE_EXTENSIONS",
+            "list_image_files",
+            "choose_image_file",
+            "image_desc_from_path",
+        },
+        {"os": os, "random": random},
+    )
+    list_image_files = ns["list_image_files"]
+    image_desc_from_path = ns["image_desc_from_path"]
+    choose_image_file = ns["choose_image_file"]
+
+    import prompts as prompts_mod
+
+    hint = prompts_mod.build_image_hint("在厨房做饭")
+    c.check("hint 带画面线索", "在厨房做饭" in hint)
+    c.check("hint 提醒别描述图片", "不要描述图片内容" in hint)
+    fallback_hint = prompts_mod.build_image_hint("   ")
+    c.check("空描述回退中性说法", "生活随拍" in fallback_hint)
+
+    c.equal("文件名作画面线索", image_desc_from_path("X:/库/做饭.png"), "做饭")
+    c.equal("纯数字名视为无语义", image_desc_from_path("20260930.jpg"), "")
+    c.equal("空名", image_desc_from_path("  .png"), "")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for name in ("a.jpg", "b.PNG", "c.txt", "d.gif", "e.webp", "f"):
+            with open(os.path.join(tmp, name), "wb") as handle:
+                handle.write(b"x")
+        os.makedirs(os.path.join(tmp, "sub"), exist_ok=True)
+        with open(os.path.join(tmp, "sub", "g.png"), "wb") as handle:
+            handle.write(b"x")
+
+        files = list_image_files(tmp)
+        names = sorted(os.path.basename(path) for path in files)
+        c.equal("只收图片扩展名且不递归", names, ["a.jpg", "b.PNG", "d.gif", "e.webp"])
+        c.check("choose 返回候选之一", os.path.basename(choose_image_file(files) or "") in names)
+        c.equal("目录不存在返回空", list_image_files(os.path.join(tmp, "nope")), [])
+        c.equal("空目录返回空", list_image_files(tmp) == [], False)
+    c.equal("空路径返回空", list_image_files(""), [])
+
+
 def main() -> int:
     checker = Checker()
     test_config_tools(checker)
@@ -334,6 +381,7 @@ def main() -> int:
     test_proactive(checker)
     test_schedule_view(checker)
     test_scope_and_segments(checker)
+    test_images(checker)
 
     print(f"\n共 {checker.count} 项检查，失败 {len(checker.failures)} 项")
     if checker.failures:

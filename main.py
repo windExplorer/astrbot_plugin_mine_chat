@@ -133,7 +133,12 @@ class MineChatPlugin(Star):
             context, self.store, self.resolver, self.settings
         )
         self.proactive = proactive_mod.ProactiveService(
-            context, self.store, self.resolver, self.schedule_service, self.settings
+            context,
+            self.store,
+            self.resolver,
+            self.schedule_service,
+            self.settings,
+            default_image_dir=os.path.join(self.data_dir, "images"),
         )
 
         self._terminating = False

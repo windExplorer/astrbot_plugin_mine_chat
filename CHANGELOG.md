@@ -1,5 +1,42 @@
 # 更新日志
 
+## v1.0.2（主动消息支持配图）
+
+**需求**：主动消息可以带图——角色偶尔随消息附一张生活照 / 随拍，会更像真人在分享。
+
+**方案取舍**：AstrBot 4.28.1 的 `ProviderType` 只有 chat_completion / speech_to_text /
+text_to_speech / embedding / rerank，**没有「文生图」provider 类型**，核心不提供内置出图能力；
+而跨插件直调绘图插件（comfyui-anima / nai_image）会把本插件与特定插件绑死、且各自接口不稳定。
+因此 v1 采用「本地图库」模式：模型不在线生成图片，而是从图库目录随机挑一张随消息附上——
+用户先用惯用的绘图插件把图生成好放进去，主动链路本身零额外依赖、零失败面。
+
+### 新增（默认关闭，开启「主动消息可以配图」即生效）
+
+- `proactive_image_enabled` 总开关；
+- `proactive_image_dir` 图库目录（留空 = `data/plugin_data/astrbot_plugin_mine_chat/images`），
+  支持 jpg / jpeg / png / webp / gif，不递归子目录；
+- `proactive_image_probability` 每次主动的配图概率（默认 0.25）；
+- `proactive_image_max_per_day` 每日配图上限（默认 2，与「每日主动上限」独立计数）。
+
+行为细节：
+
+- 命中配图在**生成之前**掷骰，随图说明会进生成提示词：文件名（去扩展名）作为画面线索告诉模型，
+  同时明确要求它不要在文字里描述图片、不要说「给你看张图」；文件名纯数字视为无语义，用中性说法兜底。
+- 图片附在最后一条消息里（`Image.fromFileSystem`）；组件构造失败自动降级为纯文本。
+- 图库目录为空 / 不可读时只告警一次，放图后无需重启。
+
+### 修复（自检暴露）
+
+- `store._init_sync` 的列迁移只执行 `ALTER`，**不回写 `meta.schema_version`**，
+  导致后续升级无法判断基线。现在迁移完成后强制把版本号写成当前 `SCHEMA_VERSION`。
+- 存储版本 1 → 2：`proactive_state` 新增 `images_today` / `images_date` 两列，
+  旧库启动时自动 `ALTER` 迁移，重复 `init()` 幂等。
+
+### 测试
+
+- `tests/test_store_migration.py`（新增）：真实 sqlite 跑建库 / v1 旧库迁移 / 重复 init / 日志清理，8 项全过。
+- `tests/test_core_logic.py` 扩到 74 项：新增配图相关纯函数检查（图库扫描、画面线索提取、随图提示词）。
+
 ## v1.0.1（装载健壮性加固，尚未经真实环境验证前的自保措施）
 
 **问题**：`main.py` 在 `__init__` 里裸调 `StarTools.get_data_dir()`。这个方法在正常环境
