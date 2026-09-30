@@ -1,0 +1,348 @@
+"""纯函数自检：不依赖 astrbot 运行时。
+
+用法：
+    python tests/test_core_logic.py        # 退出码 0 即全部通过
+
+设计：schedule / proactive / schedule_view / scope 这些模块顶部 import 了
+astrbot.api.logger，本机装不了完整 AstrBot，于是用 AST 从源文件里原样抠出
+纯函数定义再 exec —— 测的仍然是磁盘上的真代码，而不是复制品。
+"""
+
+from __future__ import annotations
+
+import ast
+import os
+import re
+import sys
+from datetime import date, datetime
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+import config as config_mod  # noqa: E402  (不依赖 astrbot，可直接导入)
+
+
+# --------------------------------------------------------------------------- #
+# 从源码抠定义
+# --------------------------------------------------------------------------- #
+def load_defs(path: str, names: set[str], extra_ns: dict | None = None) -> dict:
+    with open(os.path.join(ROOT, path), "r", encoding="utf-8") as handle:
+        source = handle.read()
+    tree = ast.parse(source)
+
+    picked = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name in names:
+                picked.append(node)
+        elif isinstance(node, ast.Assign):
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            if any(name in names for name in targets):
+                picked.append(node)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.target.id in names:
+                picked.append(node)
+
+    module = ast.Module(body=picked, type_ignores=[])
+    ast.fix_missing_locations(module)
+
+    namespace: dict = dict(extra_ns or {})
+    exec(compile(module, path, "exec"), namespace)
+    return namespace
+
+
+class Checker:
+    def __init__(self) -> None:
+        self.failures: list[str] = []
+        self.count = 0
+
+    def check(self, label: str, condition: bool, detail: str = "") -> None:
+        self.count += 1
+        if condition:
+            print(f"  [ok] {label}")
+        else:
+            print(f"  [FAIL] {label} {detail}")
+            self.failures.append(label)
+
+    def equal(self, label: str, actual, expected) -> None:
+        self.check(label, actual == expected, f"-> actual={actual!r} expected={expected!r}")
+
+
+# --------------------------------------------------------------------------- #
+def test_config_tools(c: Checker) -> None:
+    print("\n[1] config 时间工具")
+    c.equal("parse_hhmm('07:30')", config_mod.parse_hhmm("07:30"), 450)
+    c.equal("parse_hhmm('7:30')", config_mod.parse_hhmm("7:30"), 450)
+    c.equal("parse_hhmm 非法回退", config_mod.parse_hhmm("乱写", "08:00"), 480)
+    c.equal("fmt_hhmm(450)", config_mod.fmt_hhmm(450), "07:30")
+    c.equal("fmt_hhmm 跨天取模", config_mod.fmt_hhmm(1500), "01:00")
+    c.check("跨天窗口 23:00-08:30 命中 02:00", config_mod.in_time_window(120, 1380, 510))
+    c.check("跨天窗口 23:00-08:30 不命中 12:00", not config_mod.in_time_window(720, 1380, 510))
+    c.check("普通窗口命中", config_mod.in_time_window(600, 540, 720))
+    c.check("start==end 视为不生效", not config_mod.in_time_window(600, 600, 600))
+
+
+def test_settings(c: Checker) -> None:
+    print("\n[2] Settings 归一")
+    settings = config_mod.Settings.from_config({})
+    c.equal("默认生成时间 07:30", settings.schedule_time_min, 450)
+    c.equal("默认每日上限", settings.proactive_daily_limit, 6)
+    c.equal("默认静默起点 23:00", settings.proactive_quiet_start_min, 1380)
+    c.equal("默认静默终点 08:30", settings.proactive_quiet_end_min, 510)
+    c.check("默认注入范围含私聊群聊", set(settings.inject_scopes) == {"private", "group"})
+
+    dirty = config_mod.Settings.from_config(
+        {
+            "schedule_item_min": "9",
+            "schedule_item_max": "4",
+            "inject_scopes": ["private", "bogus"],
+            "inject_mode": "nonsense",
+            "schedule_time": "7:05",
+            "schedule_forbidden": "- 不要写加班\n- 不要提到猫\n",
+            "proactive_interval_seconds": 1,
+        }
+    )
+    c.equal("item_max 被夹到 >= item_min", dirty.schedule_item_max, 9)
+    c.equal("非法 scope 被剔除", dirty.inject_scopes, ("private",))
+    c.equal("非法 inject_mode 回退 tail", dirty.inject_mode, "tail")
+    c.equal("宽松时间格式解析", dirty.schedule_time_min, 425)
+    c.equal("forbidden 按行拆解", dirty.schedule_forbidden, ["不要写加班", "不要提到猫"])
+    c.equal("心跳下限 30s", dirty.proactive_interval_seconds, 30)
+
+
+def load_schedule():
+    names = {
+        "MIN_ITEM_MINUTES",
+        "MAX_ITEM_MINUTES",
+        "MIN_COVERAGE_MINUTES",
+        "_FIXED_HOLIDAYS",
+        "_STRICT_TIME_RE",
+        "_to_minutes",
+        "normalize_items",
+        "validate_items",
+        "detect_repetition",
+        "fallback_items",
+        "calendar_hint",
+    }
+    return load_defs(
+        "schedule.py",
+        names,
+        {
+            "parse_hhmm": config_mod.parse_hhmm,
+            "Settings": config_mod.Settings,
+            "date_cls": date,
+            "re": re,
+        },
+    )
+
+
+def test_schedule(c: Checker) -> None:
+    print("\n[3] 日程解析与校验")
+    ns = load_schedule()
+    normalize_items = ns["normalize_items"]
+    validate_items = ns["validate_items"]
+    detect_repetition = ns["detect_repetition"]
+    fallback_items = ns["fallback_items"]
+    calendar_hint = ns["calendar_hint"]
+
+    raw = [
+        {"time": "07:30", "end": "08:10", "activity": "起床吃早饭", "mood": "迷糊", "message_seed": "面包烤糊了"},
+        {"time": "08:10", "end": "12:00", "activity": "上班", "mood": "一般", "message_seed": ""},
+        {"time": "23:30", "end": "06:30", "activity": "睡觉", "mood": "", "message_seed": ""},
+        {"time": "bad", "end": "09:00", "activity": "坏条目"},
+        {"time": "10:00", "end": "10:02", "activity": "太短"},
+        {"time": "09:00", "end": "09:00", "activity": "零长度"},
+        "not-a-dict",
+    ]
+    items = normalize_items(raw)
+    c.equal("坏条目被过滤后剩 3 条", len(items), 3)
+    c.check("按开始时间排序", items[0]["start_min"] == 450)
+    sleep_item = [item for item in items if item["activity"] == "睡觉"][0]
+    c.equal("跨天 end 被补 1440", sleep_item["end_min"], 24 * 60 + 390)
+
+    settings = config_mod.Settings.from_config({})
+    issues, score = validate_items(items, settings)
+    c.check("条目不足触发 quality", "quality" in issues, f"issues={issues}")
+    c.check("质量分被扣减", score < 100)
+
+    overlap_items = [
+        {"start_min": 420, "end_min": 600, "activity": "a", "mood": "", "message_seed": "", "basis": [], "confidence": 0.9},
+        {"start_min": 500, "end_min": 900, "activity": "b", "mood": "", "message_seed": "", "basis": [], "confidence": 0.9},
+    ]
+    issues2, _ = validate_items(overlap_items, settings)
+    c.check("重叠被判为 time 问题", "time" in issues2, f"issues={issues2}")
+
+    full = normalize_items(
+        [
+            {"time": "07:00", "end": "07:40", "activity": "起床", "message_seed": "水"},
+            {"time": "07:40", "end": "12:00", "activity": "上午的事", "message_seed": "事"},
+            {"time": "12:00", "end": "13:00", "activity": "午饭", "message_seed": "饭"},
+            {"time": "13:00", "end": "18:00", "activity": "下午的事", "message_seed": "事"},
+            {"time": "18:00", "end": "20:00", "activity": "晚饭与休息", "message_seed": "饭"},
+            {"time": "20:00", "end": "23:30", "activity": "晚上", "message_seed": "晚"},
+            {"time": "23:30", "end": "07:00", "activity": "睡觉", "message_seed": ""},
+        ]
+    )
+    issues3, score3 = validate_items(full, settings)
+    c.check("完整一天无 time 问题", "time" not in issues3, f"issues={issues3}")
+    c.check("完整一天质量分达标", score3 >= 70, f"score={score3}")
+
+    c.check("避重命中", detect_repetition(full, ["上午的事", "午饭", "晚上"]))
+    c.check("避重未命中", not detect_repetition(full, ["别的", "无关"]))
+
+    fallback = fallback_items(settings)
+    c.check("兜底条目数 >= 4", len(fallback) >= 4, f"n={len(fallback)}")
+    monotonic = all(
+        fallback[i + 1]["start_min"] >= fallback[i]["end_min"] - 1
+        for i in range(len(fallback) - 1)
+    )
+    c.check("兜底时序单调不重叠", monotonic)
+
+    c.equal("周六判定", calendar_hint(date(2026, 10, 3)), "今天是周末。")
+    c.equal("国庆判定", calendar_hint(date(2026, 10, 1)), "今天是国庆节。")
+    c.equal("工作日判定", calendar_hint(date(2026, 9, 30)), "今天是工作日。")
+
+
+def test_proactive(c: Checker) -> None:
+    print("\n[4] 主动候选时间计算")
+    ns = load_defs(
+        "proactive.py",
+        {"_MIN_OFFSET_MINUTES", "compute_next_offset_minutes"},
+        {"Settings": config_mod.Settings, "is_sleeping": _is_sleeping_stub},
+    )
+    compute = ns["compute_next_offset_minutes"]
+    settings = config_mod.Settings.from_config({})
+    items = [
+        {"start_min": 600, "end_min": 720, "activity": "上午的事"},
+        {"start_min": 720, "end_min": 780, "activity": "午饭"},
+        {"start_min": 1380, "end_min": 1860, "activity": "睡觉"},
+    ]
+    c.equal("当前 10:00 → 下一个片段 12:00 距 120 分钟", compute(items, 600, settings), 120)
+    c.equal("当前 12:10 → 跳过睡眠段，用尾部兜底", compute(items, 730, settings), max(30, 1860 - 730 + 30))
+    c.equal("空日程给 60 分钟", compute([], 700, settings), 60)
+
+
+def _is_sleeping_stub(item) -> bool:
+    if not item:
+        return False
+    return any(key in str(item.get("activity") or "") for key in ("睡", "入眠"))
+
+
+def test_schedule_view(c: Checker) -> None:
+    print("\n[5] 片段定位与注入文案")
+    ns = load_defs(
+        "schedule_view.py",
+        {
+            "_WEEKDAY_NAMES",
+            "_SLEEP_KEYWORDS",
+            "now_minutes_for",
+            "locate",
+            "is_sleeping",
+            "block_text",
+            "build_injection_block",
+            "describe",
+        },
+        {
+            "Settings": config_mod.Settings,
+            "fmt_hhmm": config_mod.fmt_hhmm,
+            "datetime": datetime,
+            "date_cls": date,
+        },
+    )
+    locate = ns["locate"]
+    build_injection_block = ns["build_injection_block"]
+    is_sleeping = ns["is_sleeping"]
+
+    items = [
+        {"start_min": 780, "end_min": 840, "activity": "午饭", "mood": "还行", "message_seed": "面太咸了"},
+        {"start_min": 840, "end_min": 1080, "activity": "下午写东西", "mood": "专注", "message_seed": "卡在一个bug上"},
+        {"start_min": 1380, "end_min": 1860, "activity": "睡觉", "mood": "", "message_seed": ""},
+    ]
+    slots = locate(items, 900)
+    c.equal("当前片段命中下午", slots["current"]["activity"], "下午写东西")
+    c.equal("上一条是午饭", slots["previous"]["activity"], "午饭")
+    c.equal("下一条是睡觉", slots["upcoming"]["activity"], "睡觉")
+
+    gap_slots = locate(items, 1200)
+    c.check("空隙时 current 为空", gap_slots["current"] is None)
+    c.equal("空隙时 previous 为下午", gap_slots["previous"]["activity"], "下午写东西")
+    c.equal("空隙时 upcoming 为睡觉", gap_slots["upcoming"]["activity"], "睡觉")
+
+    c.check("睡眠识别", is_sleeping(items[2]))
+    c.check("非睡眠识别", not is_sleeping(items[0]))
+
+    settings = config_mod.Settings.from_config({})
+    block = build_injection_block(
+        items=items,
+        now_minutes=900,
+        settings=settings,
+        plan_date="2026-09-30",
+        last_proactive="下午茶好难喝",
+        unanswered=1,
+    )
+    c.check("注入含当前片段", "下午写东西" in block)
+    c.check("注入含刚才", "午饭" in block)
+    c.check("注入含碎片", "卡在一个bug上" in block)
+    c.check("注入含上次主动", "下午茶好难喝" in block)
+    c.check("注入含免责声明", "不是用户的经历" in block)
+    c.check("注入长度受限", len(block) <= settings.inject_max_chars + 1, f"len={len(block)}")
+
+    tight = config_mod.Settings.from_config({"inject_max_chars": 120})
+    short_block = build_injection_block(items=items, now_minutes=900, settings=tight)
+    c.check("窄限额被截断", len(short_block) <= 121, f"len={len(short_block)}")
+
+    c.equal("空日程不注入", build_injection_block(items=[], now_minutes=0, settings=settings), "")
+
+
+def test_scope_and_segments(c: Checker) -> None:
+    print("\n[6] umo 解析与消息拆条")
+    scope_ns = load_defs("scope.py", {"parse_umo", "umo_kind", "build_umo", "_INVALID_PERSONA_IDS"})
+    parse_umo = scope_ns["parse_umo"]
+    umo_kind = scope_ns["umo_kind"]
+
+    c.equal("私聊 umo", parse_umo("aiocqhttp:FriendMessage:10001"), ("aiocqhttp", "private", "10001"))
+    c.equal("群聊 umo", parse_umo("aiocqhttp:GroupMessage:20002")[1], "group")
+    c.equal("平台名带 group 不影响判定", umo_kind("mygroup: FriendMessage:1"), "private")
+    c.equal("非法 umo", umo_kind("bad-format"), "other")
+
+    gen_ns = load_defs("proactive_gen.py", {"split_segments", "_SEGMENT_SEPARATOR", "MAX_SEGMENT_CHARS"})
+    split_segments = gen_ns["split_segments"]
+
+    c.equal("单条不拆", split_segments("在干嘛呢", 3), ["在干嘛呢"])
+    c.equal(
+        "按 --- 拆条",
+        split_segments("刚吃完饭\n---\n有点撑", 3),
+        ["刚吃完饭", "有点撑"],
+    )
+    c.equal(
+        "超出上限被截断",
+        split_segments("一\n---\n二\n---\n三\n---\n四", 2),
+        ["一", "二"],
+    )
+    long_text = "字" * 300
+    parts = split_segments(long_text, 3)
+    c.check("超长单条被截断", len(parts) == 1 and len(parts[0]) <= 201, f"len={len(parts[0]) if parts else 0}")
+    c.equal("空输入返回空", split_segments("   ", 3), [])
+
+
+def main() -> int:
+    checker = Checker()
+    test_config_tools(checker)
+    test_settings(checker)
+    test_schedule(checker)
+    test_proactive(checker)
+    test_schedule_view(checker)
+    test_scope_and_segments(checker)
+
+    print(f"\n共 {checker.count} 项检查，失败 {len(checker.failures)} 项")
+    if checker.failures:
+        for name in checker.failures:
+            print(f"  - {name}")
+        return 1
+    print("全部通过")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

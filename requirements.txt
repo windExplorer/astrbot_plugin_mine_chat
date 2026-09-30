@@ -1,0 +1,5 @@
+# 萌萌日程 无额外第三方依赖：
+#   - 数据库使用 Python 标准库 sqlite3
+#   - 提示词与调度使用标准库 asyncio / datetime / json
+#   - LLM 调用复用 AstrBot 核心 Provider（context.get_using_provider）
+# 因此本文件仅作占位，保证 pip install -r requirements.txt 可正常执行。

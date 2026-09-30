@@ -1,14 +1,143 @@
-# astrbot-plugin-helloworld
+# 萌萌日程（astrbot_plugin_mine_chat）
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+> 日程排布 × 主动消息。角色有自己的生活，主动才会显得自然。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+让 Bot 拥有一份贴合人设与世界观的日常生活，并据此在合适的时机主动找用户说话。
 
-# Supports
+## 它解决什么问题
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+纯随机间隔的主动消息容易变成机械骚扰（「在吗」「最近怎么样」）；纯日程设定又只是躺在配置里的背景板。
+本插件把两者绑成一件事：**日程产生「可分享碎片」，主动消息消费它**。
+
+所以角色的主动消息通常发生在「它刚做完一件具体的事」之后，而不是凭空想起你。
+
+## 核心概念
+
+| 概念 | 说明 |
+| --- | --- |
+| **人格（persona）** | 状态作用域的主键。日程、节流、未回复计数全部挂在人格上 |
+| **窗口（umo）** | 一个会话通道，如 `aiocqhttp:FriendMessage:10001` |
+| **主窗口** | 该人格主动消息的**唯一**投递目标（v1 固定私聊） |
+| **共享窗口** | 与主窗口同人格的其他窗口（主要是群聊），只共享日程、不接收主动消息 |
+| **可分享碎片** | 日程条目里的 `message_seed`，例如「楼下便利店关东煮打折」——主动消息的燃料 |
+
+同一人格的私聊与群聊共享同一份生活，因此角色在群里说过的「下午在开会」不会和私聊矛盾。
+
+## 工作方式
+
+### 1. 日程生成（每天一次）
+
+- 触发：当天过了「每日生成时间」（默认 `07:30`）后的**首次使用**懒生成，带生成锁与日期幂等。
+- 跨天延续：还没到今天的生成时间，则继续沿用昨天的日程，避免凌晨换日导致生活断裂。
+- 上下文：人格提示词 + 世界观 + 角色补充设定 + 日期性质（工作日/周末/节日）+ 作息 + 最近几天活动（避重）。
+- 输出：严格 JSON，结构 `{schedule:[{time,end,activity,mood,message_seed,basis,confidence}]}`。
+- 校验：代码侧强制时序单调、不重叠、覆盖整天、单条 10~600 分钟；不合格按「格式 / 时序 / 重复 / 质量」分级重试；
+  仍不合格走规则兜底模板（标记 `fallback`，稍后可自动重试）。
+
+### 2. 日程注入（每次回复前）
+
+默认把动态块追加在用户消息之后（`extra_user_content_parts`，不破坏模型前缀缓存），形如：
+
+```
+【现在的时间】2026-09-30 周三 14:35
+【你此刻】14:00-15:00 在公司开周会（心情：有点犯困）
+【刚才】13:20 吃完午饭
+【稍后】15:30 去楼下咖啡厅写点东西（约 55 分钟后）
+【可以顺口提的】那家咖啡厅的拿铁太甜了
+以上是你自己的生活设定，不是用户的经历。用户不问就不要主动汇报细节；被问到再自然地说出来，不要像念行程表。
+```
+
+可切换注入位置为 `system_prompt`（部分不支持多模态内容块的模型用这个），也可整块关闭。
+
+### 3. 主动消息
+
+- 调度：60s 心跳（可调，下限 30s）+ 事件唤醒（用户说话后立刻重算）。
+- 时机：`next_at` = 下一个日程片段起点 + 0~20 分钟随机抖动，并自动避开免打扰时段。
+- **有序闸门链**（不满足即拒绝，原因码落库）：
+
+  | # | 闸门 | 默认 |
+  | --- | --- | --- |
+  | 1 | 总开关 / 人格开关 | 开 |
+  | 2 | 免打扰时段 | `23:00-08:30`（支持跨天） |
+  | 3 | 角色睡眠片段 | 不发 |
+  | 4 | 每日上限 | 6 次 |
+  | 5 | 两次最小间隔 | 45 分钟 |
+  | 6 | 连续未回复上限 | 4 次 |
+  | 7 | 用户刚说过话 | 10 分钟内不发 |
+  | 8 | 发送互斥 | 单人格串行 |
+  | 9 | 到点 | `now >= next_at` |
+  | 10 | 候选有效 | 当前/最近片段存在 |
+
+- 生成：LLM 一次，输入为当前片段 + 碎片 + 最近对话 + 上次主动内容 + 未回复次数；输出可用 `---` 拆成最多 3 条短消息连发。
+- 投递：`context.send_message(umo, MessageChain)`；返回 `False`（未找到平台）视为未送达，不写历史、不计数。
+- 写回：成功后写入对话历史，并在下一轮注入「你刚才主动发了 X」，防止上下文裁剪后角色失忆。
+- 插嘴检测：生成期间用户说话了 → 本次作废。
+
+## 指令（仅管理员）
+
+| 指令 | 说明 |
+| --- | --- |
+| `/日程` | 查看当前角色今天的日程（标出「此刻」） |
+| `/日程 刷新` | 强制重新生成今天的日程 |
+| `/主动` | 查看主动状态：投递窗口、下次候选、今日已发、未回复、免打扰 |
+| `/主动 on` / `/主动 off` | 运行时开关（不写配置，重启后按配置） |
+| `/主动 now` | 立即触发一次（仍受静默/睡眠/上限约束） |
+
+## 控制台
+
+AstrBot 插件页 **萌萌日程**（`pages/schedule-console/`）：
+
+- **总览**：此刻的生活、主动状态、最近裁决，可一键「立即主动」。
+- **日程**：时间轴查看当天安排，点条目可直接改写活动 / 心情 / 可分享碎片，支持重新生成。
+- **主动消息**：运行状态、开关、立即一次，以及裁决日志（时间 / 结果 / 原因 / 内容）。
+- **人格与窗口**：人格档案启停、查看自动登记的窗口绑定、手工增删绑定与设置主窗口。
+- **配置**：按分区编辑全部配置项。
+
+## 数据
+
+- 位置：`data/plugin_data/astrbot_plugin_mine_chat/mine_chat.db`（SQLite，WAL）。
+- 表：`persona_state` / `window_binding` / `daily_plan` / `plan_item` / `proactive_state` / `proactive_log` / `meta`。
+- 所有状态按 `persona_id` 归档；换插件版本不会丢（不放在插件安装目录）。
+
+## 安装
+
+1. 从 `dist/astrbot_plugin_mine_chat_v<版本>.zip` 安装（或克隆仓库到 `data/plugins/`）。
+2. 在 AstrBot 插件配置里至少确认：**世界观 / 角色补充设定**（写得越具体，日程越贴人）。
+3. 让角色在私聊里回你一句话 —— 这会自动登记人格与主窗口（第一条日程会在后台生成）。
+4. `/日程` 确认日程，`/主动` 确认状态。
+
+## 开发
+
+```powershell
+# 语法自检
+uv run --no-project --python 3.12 python -m compileall -q *.py
+
+# 纯函数自检（不依赖 astrbot 运行时）
+uv run --no-project --python 3.12 python tests/test_core_logic.py
+
+# 构建控制台（必须用脚本：它会把 metadata.yaml 的版本号注入 version.ts）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build_webui.ps1
+
+# 打包（先升 metadata.yaml 的 version 并在 CHANGELOG 顶部加条目）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build_zip.ps1
+```
+
+约定：
+
+- 包内模块一律相对导入（`from . import xxx`）。
+- **新增顶层 `.py` 模块**必须同时更新两处：`main.py` 的 `_RELOAD_MODULES`（热重载列表）
+  与 `build_zip.ps1` 的 `$includeList`（后者有守卫会直接报错，前者漏了会静默不生效）。
+- **新增配置键**必须同步加进 `webui-src/src/views/ConfigView.vue` 的 `GROUP_META` 分区表，
+  否则它会掉进控制台的「其他」分区。
+- 界面文案只写简体中文，**不引入 i18n**。
+
+## 已知边界（v1）
+
+- 群聊只共享日程、不主动发言；多用户 / 多人格并发未做验证。
+- 不支持图片、语音与 TTS 主动消息。
+- 不做用户作息学习、天气、位置、细化剧本与观察对账（这些是参考项目的重武器，本插件刻意做减法）。
+- `schedule_forbidden` 只处理公历固定节日，不含农历节日（春节、端午、中秋等）。
+
+## 许可
+
+MIT
