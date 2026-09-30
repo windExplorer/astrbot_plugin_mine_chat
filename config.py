@@ -204,6 +204,9 @@ class Settings:
     proactive_image_dir: str = ""
     proactive_image_workflow: str = ""
     proactive_image_prompt_style: str = "natural"
+    # 角色锚点：画面出镜角色本人时注入的外貌描述（动/真两套；空则尝试知识库）
+    proactive_image_anchor_anime: str = ""
+    proactive_image_anchor_realistic: str = ""
     proactive_image_prompt_language: str = "zh"
     proactive_image_art_style: str = "anime"
     proactive_image_negative_prompt: str = ""
@@ -431,6 +434,17 @@ class Settings:
                     "anime",
                 ),
                 "anime",
+            ),
+            proactive_image_anchor_anime=to_str(
+                pick(proactive, "image_anchor_anime", "proactive_image_anchor_anime", "")
+            ),
+            proactive_image_anchor_realistic=to_str(
+                pick(
+                    proactive,
+                    "image_anchor_realistic",
+                    "proactive_image_anchor_realistic",
+                    "",
+                )
             ),
             proactive_image_negative_prompt=to_str(
                 pick(

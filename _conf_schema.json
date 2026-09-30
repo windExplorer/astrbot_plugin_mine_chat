@@ -330,6 +330,18 @@
         "labels": ["动漫", "真人写实"],
         "default": "anime"
       },
+      "image_anchor_anime": {
+        "description": "角色锚点（动漫）",
+        "hint": "画面出镜角色本人时注入的外貌描述（发色/发型/瞳色/服饰特征或触发词）。两套锚点按当前画风取用；对应画风留空时尝试从绑定知识库检索「角色形象」，都没有则不注入。",
+        "type": "string",
+        "default": ""
+      },
+      "image_anchor_realistic": {
+        "description": "角色锚点（真人）",
+        "hint": "真人写图画风下的角色外貌描述（年龄感/脸型/发型/气质/穿搭风格）。取用逻辑同上。",
+        "type": "string",
+        "default": ""
+      },
       "image_negative_prompt": {
         "description": "负向提示词",
         "hint": "仅 anima 方式有效：透传给萌绘的负向提示词（不想出现的内容）。留空 = 不传。",

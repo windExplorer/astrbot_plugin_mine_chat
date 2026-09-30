@@ -319,6 +319,8 @@ def build_image_compose_prompt(
     style: str,
     language: str,
     now_text: str = "",
+    image_kind: str = "",
+    anchor_hint: str = "",
 ) -> str | None:
     """生成「出图提示词生成」的 LLM 指令；无可用场景事实时返回 None。
 
@@ -328,8 +330,17 @@ def build_image_compose_prompt(
     """
     activity = (activity or "").strip()
     facts_lines = [f"【此刻生活场景】{activity or '日常生活的一个随意瞬间'}"]
+    if (image_kind or "").strip():
+        facts_lines.append(
+            f"【本张图的类型】{(image_kind or '').strip()}——画面的主体与构图必须符合该类型"
+        )
     if (now_text or "").strip():
         facts_lines.append(f"【当前真实时刻】{(now_text or '').strip()}——画面的环境、光线、天空必须与该时刻一致：深夜就是黑暗/夜灯/窗外夜色，绝不能出现阳光或白天的环境")
+    if (anchor_hint or "").strip():
+        facts_lines.append(
+            f"【角色锚点】当画面出现角色本人（自拍/出镜）时，必须严格使用以下外貌描述，"
+            f"不要自行发挥长相：{(anchor_hint or '').strip()}"
+        )
     if (seed or "").strip():
         facts_lines.append(f"【可分享细节】{(seed or '').strip()}")
     if (mood or "").strip():

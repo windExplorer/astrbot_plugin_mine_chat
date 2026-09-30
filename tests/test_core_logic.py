@@ -667,6 +667,14 @@ def test_image_backends(c: Checker) -> None:
     )
     c.check("出图指令带真实时刻", timed_prompt is not None and "04:46" in (timed_prompt or ""))
     c.check("出图指令强制环境光线一致", "光线" in (timed_prompt or "") and "绝不能" in (timed_prompt or ""))
+    kind_prompt = compose(
+        activity="在厨房做饭", seed="", mood="", art_style="anime", style="danbooru", language="zh",
+        image_kind="眼前的食物或饮品（画面无人物）",
+        anchor_hint="银发红瞳少女",
+    )
+    c.check("出图指令带图类型", "食物或饮品" in (kind_prompt or ""))
+    c.check("出图指令带角色锚点", "银发红瞳少女" in (kind_prompt or ""))
+    c.check("无锚点不含锚点段", "角色锚点" not in (tags_prompt or ""))
     no_time_prompt = compose(
         activity="看书", seed="", mood="", art_style="anime", style="natural", language="zh",
     )

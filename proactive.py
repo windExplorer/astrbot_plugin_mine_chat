@@ -19,6 +19,7 @@ from typing import Any
 from astrbot.api import logger
 
 from . import bus as bus_mod
+from . import kb as kb_mod
 from . import llm as llm_mod
 from .config import Settings
 from .proactive_gen import (
@@ -574,6 +575,40 @@ class ProactiveService:
         await self._reschedule(persona_id)
         return True, "ok"
 
+    # 图片内容类型池：避免「每条带图都是角色」——自拍/入镜约占 1/3，
+    # 其余是风景/物品/食物/光影等无人物画面（这类不需要角色锚点）
+    _IMAGE_KINDS = (
+        "角色自拍（第一人称 selfie，画面有角色本人）",
+        "角色本人入镜的生活照（画面有角色本人）",
+        "眼前的风景或窗外景色（画面无人物）",
+        "身边的物品或静物特写（画面无人物）",
+        "眼前的食物或饮品（画面无人物）",
+        "天空、天气或光影（画面无人物）",
+    )
+
+    async def _resolve_image_anchor(
+        self, persona_id: str, settings: Settings
+    ) -> str:
+        """按当前画风解析角色锚点：手填 > 知识库检索 > 空（不注入）。"""
+        art = (settings.proactive_image_art_style or "anime").strip().lower()
+        manual = (
+            settings.proactive_image_anchor_anime
+            if art == "anime"
+            else settings.proactive_image_anchor_realistic
+        ).strip()
+        if manual:
+            return manual
+        try:
+            kb_name = await self.store.get_persona_kb(persona_id)
+        except Exception:  # noqa: BLE001
+            kb_name = None
+        if not kb_name:
+            return ""
+        text = await kb_mod.retrieve_kb(
+            self.context, kb_name, "角色外貌 容貌 形象 长相 发型 穿搭 设定"
+        )
+        return text[:600]
+
     def _warn_image(self, message_text: str) -> None:
         """配图相关告警只提示一次，避免每次掷骰都刷屏。"""
         if self._image_dir_warned:
@@ -657,6 +692,8 @@ class ProactiveService:
                 style=settings.proactive_image_prompt_style,
                 language=settings.proactive_image_prompt_language,
                 now_text=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                image_kind=random.choice(self._IMAGE_KINDS),
+                anchor_hint=await self._resolve_image_anchor(persona_id, settings),
             )
             path = await fetch_anima_image(
                 self.context,
