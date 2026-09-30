@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import {
   NAlert,
   NButton,
@@ -86,6 +86,19 @@ function optionsOf(item: AnyItem) {
   return options.map((value, index) => ({ label: labels[index] || value, value }));
 }
 
+/** 未保存改动数：悬浮保存条的红点徽标。 */
+const dirtyCount = computed(() => {
+  let count = 0;
+  for (const group of groups.value) {
+    for (const item of group.items) {
+      if (JSON.stringify(draft.value[item.path]) !== JSON.stringify(initial.value[item.path])) {
+        count += 1;
+      }
+    }
+  }
+  return count;
+});
+
 async function save() {
   const changed: Record<string, any> = {};
   for (const group of groups.value) {
@@ -133,6 +146,26 @@ function reset() {
     <n-alert v-if="!loading && !groups.length" type="warning" :bordered="false">
       读取不到配置项，请确认 _conf_schema.json 存在且插件已正常装载。
     </n-alert>
+
+    <!-- 悬浮保存条：配置分组多、页面长，改到哪里都能随手保存 -->
+    <teleport to="body">
+      <div class="float-bar">
+        <n-badge :value="dirtyCount" :show="dirtyCount > 0" type="warning">
+          <n-button
+            type="primary"
+            size="small"
+            :loading="saving"
+            :disabled="dirtyCount === 0"
+            @click="save"
+          >
+            保存改动
+          </n-button>
+        </n-badge>
+        <n-button size="tiny" quaternary :disabled="dirtyCount === 0" @click="reset">
+          还原
+        </n-button>
+      </div>
+    </teleport>
 
     <n-spin :show="loading">
       <n-card
@@ -207,6 +240,21 @@ function reset() {
 </template>
 
 <style scoped>
+.float-bar {
+  position: fixed;
+  right: 28px;
+  bottom: 32px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.14);
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18);
+}
 .group-head {
   display: flex;
   align-items: baseline;
