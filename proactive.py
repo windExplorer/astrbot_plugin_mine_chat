@@ -220,6 +220,33 @@ class ProactiveService:
     async def check_and_send(
         self, persona_id: str, *, manual: bool = False, force: bool = False
     ) -> tuple[bool, str]:
+        """对外入口。任何意外异常都必须在裁决日志里留痕（decision=error,
+        reason=exception, 内容列带异常摘要）——否则控制台会出现「明明失败了
+        却查不到原因」的空洞，比失败本身更难排查。"""
+        try:
+            return await self._check_and_send_impl(
+                persona_id, manual=manual, force=force
+            )
+        except Exception as exc:  # noqa: BLE001 - 兜底记录后吞掉，不让钩子/接口崩
+            logger.error(
+                "mine_chat: 主动消息处理异常 persona=%s: %s",
+                persona_id,
+                exc,
+                exc_info=True,
+            )
+            await self._record(
+                persona_id,
+                "error",
+                "exception",
+                "",
+                content=f"{type(exc).__name__}: {exc}",
+                throttle=True,
+            )
+            return False, "exception"
+
+    async def _check_and_send_impl(
+        self, persona_id: str, *, manual: bool = False, force: bool = False
+    ) -> tuple[bool, str]:
         settings: Settings = self._settings_getter()
         state = await self.store.get_proactive_state(persona_id)
         if not self._runtime_enabled(state):
