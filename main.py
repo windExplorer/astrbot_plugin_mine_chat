@@ -76,6 +76,22 @@ def _reload_dependencies() -> None:
             logger.warning("mine_chat: 热重载模块 %s 失败: %s", full, exc)
 
 
+def _resolve_data_dir() -> tuple[str, bool]:
+    """取插件专属数据目录（data/plugin_data/<插件名>）。
+
+    失败时退回插件安装目录，绝不让「取目录失败」把插件装载整体带崩。
+    注意：StarTools.initialize(context) 由 StarManager.__init__ 调用，
+    早于插件实例化，所以正常运行期这里一定是可用的。
+    """
+    try:
+        path = StarTools.get_data_dir(PLUGIN_NAME)
+        if path:
+            return str(path), True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mine_chat: get_data_dir 失败，回退插件目录: %s", exc)
+    return os.path.dirname(os.path.abspath(__file__)), False
+
+
 def command_args(event: Any, name: str) -> list[str]:
     """从消息文本里取出指令后面的参数。"""
     raw = str(getattr(event, "message_str", "") or "").strip()
@@ -105,8 +121,11 @@ class MineChatPlugin(Star):
         self.config = config
         self.plugin_version = PLUGIN_VERSION
 
-        data_dir = StarTools.get_data_dir(PLUGIN_NAME)
-        self.data_dir = str(data_dir)
+        self.data_dir, data_dir_ok = _resolve_data_dir()
+        if not data_dir_ok:
+            logger.warning(
+                "mine_chat: 未能取得插件数据目录，数据将落在插件安装目录（升级会丢失）"
+            )
         self.store = store_mod.Store(os.path.join(self.data_dir, "mine_chat.db"))
 
         self.resolver = scope_mod.ScopeResolver(context, self.store, self.settings)
@@ -118,8 +137,10 @@ class MineChatPlugin(Star):
         )
 
         self._terminating = False
+        self._ready = False
         self._gen_pending: set[str] = set()
         self._bg_tasks: set[asyncio.Task] = set()
+        self._warned: set[str] = set()
 
     # ------------------------------------------------------------------ #
     # 配置
@@ -135,16 +156,35 @@ class MineChatPlugin(Star):
         try:
             await self.store.init()
         except Exception as exc:  # noqa: BLE001
-            logger.error("mine_chat: 初始化数据库失败: %s", exc)
-            raise
+            # 刻意不 raise：数据库建不了时让本插件保持「未就绪」，
+            # 而不是把一个插件的初始化失败升级成 AstrBot 启动失败。
+            logger.error(
+                "mine_chat: 初始化数据库失败，插件将保持停用状态（数据目录 %s）：%s",
+                self.data_dir,
+                exc,
+            )
+            return
+
+        self._ready = True
         await self.proactive.start()
         try:
             webui_api_mod.register(self)
         except Exception as exc:  # noqa: BLE001 - 控制台注册失败不影响主功能
             logger.warning("mine_chat: 注册控制台路由失败: %s", exc)
+
+        settings = self.settings()
         logger.info(
-            "mine_chat: 插件已就绪 %s（数据目录 %s）", self.plugin_version, self.data_dir
+            "mine_chat: 插件已就绪 %s（数据目录 %s；日程 %s；注入 %s；主动 %s）",
+            self.plugin_version,
+            self.data_dir,
+            "开" if settings.schedule_enabled else "关",
+            (f"开/{settings.inject_mode}" if settings.inject_enabled else "关"),
+            "开" if settings.proactive_enabled else "关",
         )
+        if not settings.schedule_world.strip() and not settings.schedule_character.strip():
+            logger.warning(
+                "mine_chat: 尚未填写「世界观 / 角色补充设定」，日程会退化成泛化的普通人生活"
+            )
 
     async def terminate(self) -> None:
         self._terminating = True
@@ -161,12 +201,23 @@ class MineChatPlugin(Star):
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
 
+    def _warn_once(self, key: str, message: str, *args: Any) -> None:
+        """同类错误只告警一次，之后降为 debug。
+
+        两个钩子（每条消息 / 每次 LLM 请求）都会跑，异常若每轮都 warning 会刷屏。
+        """
+        if key in self._warned:
+            logger.debug(message, *args)
+            return
+        self._warned.add(key)
+        logger.warning(message, *args)
+
     # ------------------------------------------------------------------ #
     # 事件：用户消息
     # ------------------------------------------------------------------ #
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_user_message(self, event: AstrMessageEvent) -> None:
-        if self._terminating:
+        if self._terminating or not self._ready:
             return
         settings = self.settings()
         if not settings.enabled:
@@ -186,19 +237,19 @@ class MineChatPlugin(Star):
             if settings.schedule_enabled:
                 self._ensure_plan_background(persona_id, umo)
         except Exception as exc:  # noqa: BLE001 - 钩子异常不能影响正常回复
-            logger.debug("mine_chat: 用户消息处理失败 umo=%s: %s", umo, exc)
+            self._warn_once("user_message", "mine_chat: 用户消息处理失败 umo=%s: %s", umo, exc)
 
     # ------------------------------------------------------------------ #
     # 事件：注入日程
     # ------------------------------------------------------------------ #
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: Any) -> None:
-        if self._terminating:
+        if self._terminating or not self._ready:
             return
         try:
             await self._inject_schedule(event, req)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("mine_chat: 注入日程失败: %s", exc)
+            self._warn_once("inject", "mine_chat: 注入日程失败: %s", exc)
 
     async def _inject_schedule(self, event: AstrMessageEvent, req: Any) -> None:
         settings = self.settings()
@@ -274,6 +325,9 @@ class MineChatPlugin(Star):
         if not event.is_admin():
             yield event.plain_result("这个指令只有管理员可以使用。")
             return
+        if not self._ready:
+            yield event.plain_result("插件未就绪（数据库初始化失败），请查看 AstrBot 日志。")
+            return
         settings = self.settings()
         if not settings.enabled:
             yield event.plain_result("萌萌日程当前已关闭（配置项「启用插件」）。")
@@ -311,6 +365,9 @@ class MineChatPlugin(Star):
         """查看/开关主动消息（on / off / now）"""
         if not event.is_admin():
             yield event.plain_result("这个指令只有管理员可以使用。")
+            return
+        if not self._ready:
+            yield event.plain_result("插件未就绪（数据库初始化失败），请查看 AstrBot 日志。")
             return
         settings = self.settings()
         if not settings.enabled:
