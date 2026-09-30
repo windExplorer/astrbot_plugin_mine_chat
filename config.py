@@ -1,7 +1,11 @@
 """配置读取与默认值归一。
 
-唯一权威默认值在 `_conf_schema.json`；本模块只做类型归一与取值范围收敛，
-避免用户把配置页手工改坏之后（字符串塞进 int、空值塞进 list）插件直接崩。
+配置结构（v1.0.4 起与 `_conf_schema.json` 一一对应，均为嵌套分组）：
+`persona` / `inject` / `schedule` / `proactive` / `prompt` / `advanced`，
+顶层仅 `enabled` 总开关。
+
+本模块只做类型归一与取值范围收敛，避免配置被手工改坏后（字符串塞进 int、
+空值塞进 list）插件直接崩；同时兼容 v1.0.x 的平铺键并在启动时自动迁移。
 """
 
 from __future__ import annotations
@@ -13,9 +17,6 @@ from typing import Any
 _TIME_RE = re.compile(r"^\s*(\d{1,2})\s*[:：]\s*(\d{1,2})")
 
 
-# --------------------------------------------------------------------------- #
-# 基础类型归一
-# --------------------------------------------------------------------------- #
 def to_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -78,9 +79,6 @@ def to_list(value: Any, default: list[str] | None = None) -> list[str]:
     return list(default or [])
 
 
-# --------------------------------------------------------------------------- #
-# 时间解析
-# --------------------------------------------------------------------------- #
 def parse_hhmm(value: Any, fallback: str = "00:00") -> int:
     """把 'HH:MM' 解析成当天分钟数 0..1439。解析失败时用 fallback。"""
     for candidate in (value, fallback):
@@ -116,12 +114,19 @@ def in_time_window(now_minute: int, start_minute: int, end_minute: int) -> bool:
     return now_minute >= start_minute or now_minute < end_minute
 
 
-# --------------------------------------------------------------------------- #
-# 配置快照
-# --------------------------------------------------------------------------- #
+def _group_of(raw: Any, name: str) -> dict[str, Any]:
+    """取配置里的嵌套分组；缺失或不是 dict 时返回空 dict。"""
+    value = raw.get(name) if hasattr(raw, "get") else None
+    return value if isinstance(value, dict) else {}
+
+
 @dataclass(frozen=True)
 class Settings:
-    """一次读取得到的配置快照（不可变，便于跨协程传递）。"""
+    """一次读取得到的配置快照（不可变，便于跨协程传递）。
+
+    属性名是插件的内部稳定接口；配置结构重组只影响 `from_config`
+    的取值路径，不影响下游模块。
+    """
 
     # 基础
     enabled: bool = True
@@ -186,101 +191,195 @@ class Settings:
     # 其他
     log_retention: int = 2000
 
-    # ------------------------------------------------------------------ #
     @classmethod
     def from_config(cls, raw: Any) -> Settings:
+        """读取配置（嵌套分组优先，v1.0.x 平铺键兜底）。"""
         get = raw.get if hasattr(raw, "get") else (lambda key, default=None: default)
+        persona = _group_of(raw, "persona")
+        inject = _group_of(raw, "inject")
+        schedule = _group_of(raw, "schedule")
+        proactive = _group_of(raw, "proactive")
+        prompt = _group_of(raw, "prompt")
+        advanced = _group_of(raw, "advanced")
 
-        item_min = to_int(get("schedule_item_min", 6), 6, 2, 24)
-        item_max = to_int(get("schedule_item_max", 14), 14, 2, 48)
+        def pick(
+            group: dict[str, Any], group_key: str, legacy_key: str, default: Any
+        ) -> Any:
+            """优先取嵌套组内键；为 None 时回退 v1.0.x 的平铺键。"""
+            value = group.get(group_key)
+            if value is not None:
+                return value
+            value = get(legacy_key)
+            return default if value is None else value
+
+        item_min = to_int(pick(schedule, "item_min", "schedule_item_min", 6), 6, 2, 24)
+        item_max = to_int(pick(schedule, "item_max", "schedule_item_max", 14), 14, 2, 48)
         if item_max < item_min:
             item_max = item_min
 
-        scopes = to_list(get("inject_scopes", ["private", "group"]), ["private", "group"])
+        scopes = to_list(
+            pick(inject, "scopes", "inject_scopes", ["private", "group"]),
+            ["private", "group"],
+        )
         scopes = [scope for scope in scopes if scope in {"private", "group"}]
         if not scopes:
             scopes = ["private", "group"]
 
-        mode = to_str(get("inject_mode", "tail"), "tail")
+        mode = to_str(pick(inject, "mode", "inject_mode", "tail"), "tail")
         if mode not in {"tail", "system"}:
             mode = "tail"
 
-        forbidden_raw = to_str(get("schedule_forbidden", ""))
+        forbidden_raw = to_str(pick(schedule, "forbidden", "schedule_forbidden", ""))
         forbidden = [line.strip(" -·\t") for line in forbidden_raw.splitlines() if line.strip()]
 
         return cls(
             enabled=to_bool(get("enabled", True), True),
-            # 新键 active_persona；兼容发布初期用过的 persona_override。
-            active_persona=to_str(get("active_persona", ""))
+            active_persona=to_str(pick(persona, "active", "active_persona", ""))
             or to_str(get("persona_override", "")),
-            primary_umo=to_str(get("primary_umo", "")),
-            window_auto_bind=to_bool(get("window_auto_bind", True), True),
+            primary_umo=to_str(pick(persona, "primary_umo", "primary_umo", "")),
+            window_auto_bind=to_bool(
+                pick(persona, "auto_bind", "window_auto_bind", False), False
+            ),
             inject_scopes=tuple(scopes),
-            inject_enabled=to_bool(get("inject_enabled", True), True),
+            inject_enabled=to_bool(pick(inject, "enabled", "inject_enabled", True), True),
             inject_mode=mode,
-            inject_max_chars=to_int(get("inject_max_chars", 600), 600, 120, 4000),
-            inject_lookback_minutes=to_int(get("inject_lookback_minutes", 90), 90, 0, 720),
-            inject_lookahead_minutes=to_int(get("inject_lookahead_minutes", 180), 180, 0, 1440),
-            inject_include_seed=to_bool(get("inject_include_seed", True), True),
-            schedule_enabled=to_bool(get("schedule_enabled", True), True),
-            schedule_time_min=parse_hhmm(get("schedule_time", "07:30"), "07:30"),
+            inject_max_chars=to_int(
+                pick(inject, "max_chars", "inject_max_chars", 600), 600, 120, 4000
+            ),
+            inject_lookback_minutes=to_int(
+                pick(inject, "lookback_minutes", "inject_lookback_minutes", 90), 90, 0, 720
+            ),
+            inject_lookahead_minutes=to_int(
+                pick(inject, "lookahead_minutes", "inject_lookahead_minutes", 180), 180, 0, 1440
+            ),
+            inject_include_seed=to_bool(
+                pick(inject, "include_seed", "inject_include_seed", True), True
+            ),
+            schedule_enabled=to_bool(pick(schedule, "enabled", "schedule_enabled", True), True),
+            schedule_time_min=parse_hhmm(
+                pick(schedule, "time", "schedule_time", "07:30"), "07:30"
+            ),
             schedule_item_min=item_min,
             schedule_item_max=item_max,
-            schedule_sleep_start_min=parse_hhmm(get("schedule_sleep_start", "23:30"), "23:30"),
-            schedule_sleep_end_min=parse_hhmm(get("schedule_sleep_end", "07:30"), "07:30"),
-            schedule_allow_night_owl=to_bool(get("schedule_allow_night_owl", False), False),
-            schedule_avoid_days=to_int(get("schedule_avoid_days", 3), 3, 0, 14),
-            schedule_max_retry=to_int(get("schedule_max_retry", 2), 2, 0, 5),
+            schedule_sleep_start_min=parse_hhmm(
+                pick(schedule, "sleep_start", "schedule_sleep_start", "23:30"), "23:30"
+            ),
+            schedule_sleep_end_min=parse_hhmm(
+                pick(schedule, "sleep_end", "schedule_sleep_end", "07:30"), "07:30"
+            ),
+            schedule_allow_night_owl=to_bool(
+                pick(schedule, "night_owl", "schedule_allow_night_owl", False), False
+            ),
+            schedule_avoid_days=to_int(
+                pick(schedule, "avoid_days", "schedule_avoid_days", 3), 3, 0, 14
+            ),
+            schedule_max_retry=to_int(
+                pick(schedule, "max_retry", "schedule_max_retry", 2), 2, 0, 5
+            ),
             schedule_style=to_str(
-                get(
+                pick(
+                    schedule,
+                    "style",
                     "schedule_style",
                     "日常向：以真实、细碎、有呼吸感的生活节奏为主，避免戏剧化和过分精彩的一天。",
                 )
             ),
-            schedule_world=to_str(get("schedule_world", "")),
-            schedule_character=to_str(get("schedule_character", "")),
+            schedule_world=to_str(pick(schedule, "world", "schedule_world", "")),
+            schedule_character=to_str(pick(schedule, "character", "schedule_character", "")),
             schedule_forbidden=forbidden,
-            schedule_model=to_str(get("schedule_model", "")),
-            schedule_temperature=to_float(get("schedule_temperature", 1.0), 1.0, 0.0, 2.0),
-            proactive_enabled=to_bool(get("proactive_enabled", True), True),
+            schedule_model=to_str(pick(schedule, "model", "schedule_model", "")),
+            schedule_temperature=to_float(
+                pick(schedule, "temperature", "schedule_temperature", 1.0), 1.0, 0.0, 2.0
+            ),
+            proactive_enabled=to_bool(
+                pick(proactive, "enabled", "proactive_enabled", True), True
+            ),
             proactive_interval_seconds=to_int(
-                get("proactive_interval_seconds", 60), 60, 30, 3600
+                pick(proactive, "interval_seconds", "proactive_interval_seconds", 60),
+                60,
+                30,
+                3600,
             ),
-            proactive_daily_limit=to_int(get("proactive_daily_limit", 6), 6, 0, 100),
+            proactive_daily_limit=to_int(
+                pick(proactive, "daily_limit", "proactive_daily_limit", 6), 6, 0, 100
+            ),
             proactive_min_interval_minutes=to_int(
-                get("proactive_min_interval_minutes", 45), 45, 0, 1440
+                pick(proactive, "min_interval_minutes", "proactive_min_interval_minutes", 45),
+                45,
+                0,
+                1440,
             ),
-            proactive_max_unanswered=to_int(get("proactive_max_unanswered", 4), 4, 0, 100),
-            proactive_quiet_start_min=parse_hhmm(get("proactive_quiet_start", "23:00"), "23:00"),
-            proactive_quiet_end_min=parse_hhmm(get("proactive_quiet_end", "08:30"), "08:30"),
+            proactive_max_unanswered=to_int(
+                pick(proactive, "max_unanswered", "proactive_max_unanswered", 4), 4, 0, 100
+            ),
+            proactive_quiet_start_min=parse_hhmm(
+                pick(proactive, "quiet_start", "proactive_quiet_start", "23:00"), "23:00"
+            ),
+            proactive_quiet_end_min=parse_hhmm(
+                pick(proactive, "quiet_end", "proactive_quiet_end", "08:30"), "08:30"
+            ),
             proactive_user_active_cooldown_minutes=to_int(
-                get("proactive_user_active_cooldown_minutes", 10), 10, 0, 720
+                pick(
+                    proactive,
+                    "user_active_cooldown",
+                    "proactive_user_active_cooldown_minutes",
+                    10,
+                ),
+                10,
+                0,
+                720,
             ),
-            proactive_skip_sleeping=to_bool(get("proactive_skip_sleeping", True), True),
+            proactive_skip_sleeping=to_bool(
+                pick(proactive, "skip_sleeping", "proactive_skip_sleeping", True), True
+            ),
             proactive_seed_window_minutes=to_int(
-                get("proactive_seed_window_minutes", 90), 90, 5, 720
+                pick(proactive, "seed_window", "proactive_seed_window_minutes", 90), 90, 5, 720
             ),
-            proactive_jitter_minutes=to_int(get("proactive_jitter_minutes", 20), 20, 0, 180),
-            proactive_max_segments=to_int(get("proactive_max_segments", 3), 3, 1, 5),
+            proactive_jitter_minutes=to_int(
+                pick(proactive, "jitter", "proactive_jitter_minutes", 20), 20, 0, 180
+            ),
+            proactive_max_segments=to_int(
+                pick(proactive, "max_segments", "proactive_max_segments", 3), 3, 1, 5
+            ),
             proactive_segment_delay=to_float(
-                get("proactive_segment_delay_seconds", 1.5), 1.5, 0.0, 10.0
+                pick(proactive, "segment_delay", "proactive_segment_delay_seconds", 1.5),
+                1.5,
+                0.0,
+                10.0,
             ),
             proactive_history_messages=to_int(
-                get("proactive_history_messages", 10), 10, 0, 50
+                pick(proactive, "history_messages", "proactive_history_messages", 10),
+                10,
+                0,
+                50,
             ),
-            proactive_model=to_str(get("proactive_model", "")),
-            proactive_extra_instruction=to_str(get("proactive_extra_instruction", "")),
-            proactive_image_enabled=to_bool(get("proactive_image_enabled", False), False),
-            proactive_image_dir=to_str(get("proactive_image_dir", "")),
+            proactive_model=to_str(pick(proactive, "model", "proactive_model", "")),
+            proactive_extra_instruction=to_str(
+                pick(proactive, "extra_instruction", "proactive_extra_instruction", "")
+            ),
+            proactive_image_enabled=to_bool(
+                pick(proactive, "image_enabled", "proactive_image_enabled", False), False
+            ),
+            proactive_image_dir=to_str(pick(proactive, "image_dir", "proactive_image_dir", "")),
             proactive_image_probability=to_float(
-                get("proactive_image_probability", 0.25), 0.25, 0.0, 1.0
+                pick(proactive, "image_probability", "proactive_image_probability", 0.25),
+                0.25,
+                0.0,
+                1.0,
             ),
             proactive_image_max_per_day=to_int(
-                get("proactive_image_max_per_day", 2), 2, 0, 50
+                pick(proactive, "image_max_per_day", "proactive_image_max_per_day", 2),
+                2,
+                0,
+                50,
             ),
-            prompt_plan_override=to_str(get("prompt_plan_override", "")),
-            prompt_proactive_override=to_str(get("prompt_proactive_override", "")),
-            log_retention=to_int(get("log_retention", 2000), 2000, 100, 100000),
+            prompt_plan_override=to_str(pick(prompt, "plan", "prompt_plan_override", "")),
+            prompt_proactive_override=to_str(
+                pick(prompt, "proactive", "prompt_proactive_override", "")
+            ),
+            log_retention=to_int(
+                pick(advanced, "log_retention", "log_retention", 2000), 2000, 100, 100000
+            ),
         )
 
     def quiet_now(self, now_minute: int) -> bool:
@@ -294,37 +393,99 @@ class Settings:
 
 
 # --------------------------------------------------------------------------- #
-# 配置写回
+# 旧配置迁移
 # --------------------------------------------------------------------------- #
-def schema_defaults(schema: dict[str, Any] | None) -> dict[str, Any]:
-    """从 _conf_schema.json 抽出 key -> default 映射（给控制台表单用）。"""
-    result: dict[str, Any] = {}
-    for key, spec in (schema or {}).items():
-        if isinstance(spec, dict) and "default" in spec:
-            result[key] = spec["default"]
-    return result
+# v1.0.x 平铺键 -> 新嵌套结构的映射：(旧键, 新组, 新键)
+_LEGACY_KEY_MAP: tuple[tuple[str, str, str], ...] = (
+    ("active_persona", "persona", "active"),
+    ("persona_override", "persona", "active"),
+    ("primary_umo", "persona", "primary_umo"),
+    ("window_auto_bind", "persona", "auto_bind"),
+    ("inject_enabled", "inject", "enabled"),
+    ("inject_mode", "inject", "mode"),
+    ("inject_scopes", "inject", "scopes"),
+    ("inject_max_chars", "inject", "max_chars"),
+    ("inject_lookback_minutes", "inject", "lookback_minutes"),
+    ("inject_lookahead_minutes", "inject", "lookahead_minutes"),
+    ("inject_include_seed", "inject", "include_seed"),
+    ("schedule_enabled", "schedule", "enabled"),
+    ("schedule_time", "schedule", "time"),
+    ("schedule_sleep_start", "schedule", "sleep_start"),
+    ("schedule_sleep_end", "schedule", "sleep_end"),
+    ("schedule_allow_night_owl", "schedule", "night_owl"),
+    ("schedule_item_min", "schedule", "item_min"),
+    ("schedule_item_max", "schedule", "item_max"),
+    ("schedule_avoid_days", "schedule", "avoid_days"),
+    ("schedule_max_retry", "schedule", "max_retry"),
+    ("schedule_model", "schedule", "model"),
+    ("schedule_temperature", "schedule", "temperature"),
+    ("schedule_style", "schedule", "style"),
+    ("schedule_world", "schedule", "world"),
+    ("schedule_character", "schedule", "character"),
+    ("schedule_forbidden", "schedule", "forbidden"),
+    ("proactive_enabled", "proactive", "enabled"),
+    ("proactive_interval_seconds", "proactive", "interval_seconds"),
+    ("proactive_daily_limit", "proactive", "daily_limit"),
+    ("proactive_min_interval_minutes", "proactive", "min_interval_minutes"),
+    ("proactive_max_unanswered", "proactive", "max_unanswered"),
+    ("proactive_quiet_start", "proactive", "quiet_start"),
+    ("proactive_quiet_end", "proactive", "quiet_end"),
+    ("proactive_user_active_cooldown_minutes", "proactive", "user_active_cooldown"),
+    ("proactive_skip_sleeping", "proactive", "skip_sleeping"),
+    ("proactive_seed_window_minutes", "proactive", "seed_window"),
+    ("proactive_jitter_minutes", "proactive", "jitter"),
+    ("proactive_max_segments", "proactive", "max_segments"),
+    ("proactive_segment_delay_seconds", "proactive", "segment_delay"),
+    ("proactive_history_messages", "proactive", "history_messages"),
+    ("proactive_model", "proactive", "model"),
+    ("proactive_extra_instruction", "proactive", "extra_instruction"),
+    ("proactive_image_enabled", "proactive", "image_enabled"),
+    ("proactive_image_dir", "proactive", "image_dir"),
+    ("proactive_image_probability", "proactive", "image_probability"),
+    ("proactive_image_max_per_day", "proactive", "image_max_per_day"),
+    ("prompt_plan_override", "prompt", "plan"),
+    ("prompt_proactive_override", "prompt", "proactive"),
+    ("log_retention", "advanced", "log_retention"),
+)
+
+
+def migrate_legacy_config(config: Any) -> bool:
+    """把 v1.0.x 的平铺配置键搬进嵌套分组（幂等）。
+
+    只有新键尚未设置时才采用旧值（用户在控制台的最新改动优先）。
+    搬完删掉旧键并落盘。返回是否发生了变更。
+    """
+    if config is None or not hasattr(config, "get"):
+        return False
+    changed = False
+    for legacy_key, group_name, new_key in _LEGACY_KEY_MAP:
+        if legacy_key not in config:
+            continue
+        legacy_value = config.get(legacy_key)
+        bucket = config.get(group_name)
+        if not isinstance(bucket, dict):
+            bucket = {}
+        if bucket.get(new_key) is None and legacy_value is not None:
+            bucket[new_key] = legacy_value
+            config[group_name] = bucket
+            changed = True
+        config.pop(legacy_key, None)
+        changed = True
+    if changed and hasattr(config, "save_config"):
+        try:
+            config.save_config()
+        except Exception:  # noqa: BLE001
+            return False
+    return changed
 
 
 def save_value(config: Any, key: str, value: Any) -> bool:
-    """写回单个配置键并落盘。返回是否成功。"""
+    """写回单个顶层配置键并落盘。返回是否成功。"""
     if config is None or not hasattr(config, "save_config"):
         return False
     try:
         config[key] = value
         config.save_config()
         return True
-    except Exception:
-        return False
-
-
-def save_values(config: Any, values: dict[str, Any]) -> bool:
-    """批量写回配置并落盘。"""
-    if config is None or not hasattr(config, "save_config"):
-        return False
-    try:
-        for key, value in values.items():
-            config[key] = value
-        config.save_config()
-        return True
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False

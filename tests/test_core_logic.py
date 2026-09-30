@@ -122,6 +122,29 @@ def test_settings(c: Checker) -> None:
     selected = config_mod.Settings.from_config({"active_persona": "小满"})
     c.check("新键生效", selected.persona_selected())
 
+    # 嵌套分组读取（v1.0.4 起的配置结构）
+    nested = config_mod.Settings.from_config(
+        {"persona": {"active": "嵌套人格", "auto_bind": True}, "advanced": {"log_retention": 500}}
+    )
+    c.equal("嵌套 persona.active", nested.active_persona, "嵌套人格")
+    c.equal("嵌套 persona.auto_bind", nested.window_auto_bind, True)
+    c.equal("嵌套 advanced.log_retention", nested.log_retention, 500)
+
+    # 自动迁移：平铺键 → 嵌套结构（幂等，旧键清除，新键已有值时不覆盖）
+    flat: dict = {"inject_lookback_minutes": 60, "schedule_time": "08:15", "window_auto_bind": True}
+    c.check("迁移发生了变更", config_mod.migrate_legacy_config(flat))
+    c.equal("迁移后 inject.lookback", flat["inject"]["lookback_minutes"], 60)
+    c.equal("迁移后 schedule.time", flat["schedule"]["time"], "08:15")
+    c.equal("迁移后 persona.auto_bind", flat["persona"]["auto_bind"], True)
+    c.check("旧键已清除", "inject_lookback_minutes" not in flat)
+    migrated = config_mod.Settings.from_config(flat)
+    c.equal("迁移后 Settings 生效", migrated.inject_lookback_minutes, 60)
+    c.equal("迁移后时间解析", migrated.schedule_time_min, 8 * 60 + 15)
+    c.check("幂等：再迁移无变更", not config_mod.migrate_legacy_config(flat))
+    preexisting: dict = {"persona": {"active": "新值"}, "persona_override": "旧值"}
+    config_mod.migrate_legacy_config(preexisting)
+    c.equal("新键已有值时旧键不覆盖", preexisting["persona"]["active"], "新值")
+
 
 def load_schedule():
     names = {

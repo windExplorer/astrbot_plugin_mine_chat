@@ -138,8 +138,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build_zip.ps1
 - 包内模块一律相对导入（`from . import xxx`）。
 - **新增顶层 `.py` 模块**必须同时更新两处：`main.py` 的 `_RELOAD_MODULES`（热重载列表）
   与 `build_zip.ps1` 的 `$includeList`（后者有守卫会直接报错，前者漏了会静默不生效）。
-- **新增配置键**必须同步加进 `webui-src/src/views/ConfigView.vue` 的 `GROUP_META` 分区表，
-  否则它会掉进控制台的「其他」分区。
+- **新增配置键**直接在 `_conf_schema.json` 对应分组的 `items` 里加（嵌套 object 结构）：
+  AstrBot 内置配置页与控制台配置页都由它驱动，不需要改前端；控制台保存走点路径
+  （如 `persona.active`）。
 - 界面文案只写简体中文，**不引入 i18n**。
 
 ## 已知边界（v1）

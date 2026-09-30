@@ -15,7 +15,6 @@ from typing import Any, Awaitable, Callable
 
 from astrbot.api import logger
 
-from . import config as config_mod
 from . import schedule_view as view_mod
 
 try:  # quart 是 AstrBot 的运行期依赖
@@ -286,8 +285,16 @@ async def h_persona_activate(plugin) -> dict:
     }
     if available and persona_id not in available:
         return err(f"人格「{persona_id}」不在 AstrBot 人格列表里")
-    if not config_mod.save_value(plugin.config, "active_persona", persona_id):
-        return err("配置写回失败（save_config）")
+    config = plugin.config
+    if config is None or not hasattr(config, "save_config"):
+        return err("插件配置不可用")
+    bucket = config.get("persona") if isinstance(config.get("persona"), dict) else {}
+    bucket["active"] = persona_id
+    config["persona"] = bucket
+    try:
+        config.save_config()
+    except Exception as exc:  # noqa: BLE001
+        return err(f"配置写回失败: {exc}")
     await plugin.store.upsert_persona(
         persona_id, plugin.resolver.persona_display_name(persona_id), True
     )
@@ -432,31 +439,90 @@ async def h_logs(plugin) -> dict:
 # --------------------------------------------------------------------------- #
 # 配置
 # --------------------------------------------------------------------------- #
+def _spec_to_item(path: str, key: str, spec: dict[str, Any], value: Any) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "path": path,
+        "key": key,
+        "type": spec.get("type", "string"),
+        "description": spec.get("description", key),
+        "hint": spec.get("hint", ""),
+        "default": spec.get("default"),
+        "value": value,
+    }
+    if "options" in spec:
+        entry["options"] = spec.get("options")
+    if "labels" in spec:
+        entry["labels"] = spec.get("labels")
+    nested = spec.get("items")
+    if isinstance(nested, dict):
+        entry["item_options"] = nested.get("options")
+        entry["item_labels"] = nested.get("labels")
+    return entry
+
+
+def _resolve_spec(schema: dict[str, Any], path: str) -> dict[str, Any] | None:
+    """按 'group.key' 点路径在嵌套 schema 里找到该键的定义。"""
+    parts = path.split(".")
+    node = schema.get(parts[0]) if isinstance(schema, dict) else None
+    if not isinstance(node, dict):
+        return None
+    for part in parts[1:]:
+        items = node.get("items")
+        if not isinstance(items, dict) or part not in items:
+            return None
+        node = items[part]
+    return node if isinstance(node, dict) and "type" in node else None
+
+
+def _set_by_path(config: Any, path: str, value: Any) -> bool:
+    parts = path.split(".")
+    if len(parts) == 1:
+        config[parts[0]] = value
+        return True
+    if len(parts) != 2:
+        return False
+    bucket = config.get(parts[0])
+    if not isinstance(bucket, dict):
+        bucket = {}
+    bucket[parts[1]] = value
+    config[parts[0]] = bucket
+    return True
+
+
 async def h_config(plugin) -> dict:
+    """按 schema 的分组结构返回配置。
+
+    控制台与 AstrBot 内置配置页共用同一份 `_conf_schema.json`：
+    这里的分组直接由 schema 派生，前端不再手工维护分区表。
+    """
     schema = _load_schema()
     config = plugin.config or {}
-    items: list[dict[str, Any]] = []
-    for key, spec in schema.items():
-        if not isinstance(spec, dict):
+    groups: list[dict[str, Any]] = []
+    for name, spec in schema.items():
+        if not isinstance(spec, dict) or "type" not in spec:
             continue
-        entry: dict[str, Any] = {
-            "key": key,
-            "type": spec.get("type", "string"),
-            "description": spec.get("description", key),
-            "hint": spec.get("hint", ""),
-            "default": spec.get("default"),
-            "value": config.get(key, spec.get("default")),
-        }
-        if "options" in spec:
-            entry["options"] = spec.get("options")
-        if "labels" in spec:
-            entry["labels"] = spec.get("labels")
-        nested = spec.get("items")
-        if isinstance(nested, dict):
-            entry["item_options"] = nested.get("options")
-            entry["item_labels"] = nested.get("labels")
-        items.append(entry)
-    return ok({"items": items, "version": plugin.plugin_version})
+        if spec.get("type") == "object":
+            bucket = config.get(name) if isinstance(config.get(name), dict) else {}
+            items = [
+                _spec_to_item(
+                    f"{name}.{key}", key, child, bucket.get(key, child.get("default"))
+                )
+                for key, child in (spec.get("items") or {}).items()
+                if isinstance(child, dict) and "type" in child
+            ]
+        else:
+            items = [
+                _spec_to_item(name, name, spec, config.get(name, spec.get("default")))
+            ]
+        groups.append(
+            {
+                "name": name,
+                "description": spec.get("description", name),
+                "hint": spec.get("hint", ""),
+                "items": items,
+            }
+        )
+    return ok({"groups": groups, "version": plugin.plugin_version})
 
 
 async def h_config_save(plugin) -> dict:
@@ -470,15 +536,16 @@ async def h_config_save(plugin) -> dict:
         return err("插件配置不可用")
 
     changed: list[str] = []
-    for key, raw in values.items():
-        spec = schema.get(key)
-        if not isinstance(spec, dict):
+    for path, raw in values.items():
+        spec = _resolve_spec(schema, str(path))
+        if spec is None:
             continue
         try:
-            config[key] = _cast(raw, spec)
-            changed.append(key)
+            if not _set_by_path(config, str(path), _cast(raw, spec)):
+                continue
+            changed.append(str(path))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("mine_chat: 写入配置 %s 失败: %s", key, exc)
+            logger.warning("mine_chat: 写入配置 %s 失败: %s", path, exc)
     if not changed:
         return err("没有可写入的配置项（键名不在 _conf_schema.json 中）")
     try:

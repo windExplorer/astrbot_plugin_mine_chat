@@ -179,6 +179,11 @@ class MineChatPlugin(Star):
             return
 
         self._ready = True
+        try:
+            if config_mod.migrate_legacy_config(self.config):
+                logger.info("mine_chat: 已把 v1.0.x 的平铺配置键迁移到分组结构")
+        except Exception as exc:  # noqa: BLE001 - 迁移失败不影响读取（读取有兼容兜底）
+            logger.warning("mine_chat: 平铺配置迁移失败: %s", exc)
         await self.proactive.start()
         try:
             webui_api_mod.register(self)

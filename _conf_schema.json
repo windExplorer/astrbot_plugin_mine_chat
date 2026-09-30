@@ -1,307 +1,338 @@
 {
   "enabled": {
     "description": "启用插件",
-    "hint": "总开关。关闭后不再生成日程、不再注入、不再发主动消息（已生成的数据保留）。",
+    "hint": "总开关。关闭后不生成日程、不注入、不发主动消息（已生成的数据保留）。",
     "type": "bool",
     "default": true
   },
-  "active_persona": {
-    "description": "当前人格（必填）",
-    "hint": "本插件服务的人格名（AstrBot 人格列表里的名字），建议在控制台「人格与窗口」页直接选择。留空 = 插件未启用：不会生成日程、不会注入、不会主动发消息。设置人格后，还需要绑定一个私聊窗口作为投递目标，插件才会正常运行。",
-    "type": "string",
-    "default": ""
-  },
-  "primary_umo": {
-    "description": "主动消息投递窗口",
-    "hint": "格式 platform:FriendMessage:QQ号，例如 aiocqhttp:FriendMessage:10001。留空 = 使用「人格与窗口」页里标记为投递目标的绑定窗口。两者都没有时插件同样视为未启用。",
-    "type": "string",
-    "default": ""
-  },
-  "window_auto_bind": {
-    "description": "自动登记窗口绑定",
-    "hint": "开启后，任一窗口的用户说话都会自动绑定到当前人格（省去手填 umo）。关闭（默认）则只有「人格与窗口」页里显式添加的绑定才生效——未绑定的窗口不会注入日程。",
-    "type": "bool",
-    "default": false
-  },
-  "inject_scopes": {
-    "description": "日程注入范围",
-    "hint": "哪些类型的窗口需要把「角色此刻在做什么」注入对话上下文。仅影响注入，不会让角色在这些窗口主动发言。",
-    "type": "list",
+  "persona": {
+    "description": "人格与窗口",
+    "hint": "插件按「人格」归档全部状态；投递窗口是主动消息唯一发往的私聊。",
     "items": {
-      "type": "string",
-      "options": ["private", "group"],
-      "labels": ["私聊", "群聊"]
-    },
-    "default": ["private", "group"]
+      "active": {
+        "description": "当前人格（启用条件）",
+        "hint": "本插件服务的人格名（AstrBot 人格列表里的名字），建议在控制台「人格与窗口」页直接选择。留空 = 插件未启用。",
+        "type": "string",
+        "default": ""
+      },
+      "primary_umo": {
+        "description": "主动消息投递窗口（启用条件）",
+        "hint": "格式 platform:FriendMessage:QQ号，例如 aiocqhttp:FriendMessage:10001。留空 = 使用控制台「人格与窗口」页里标记为投递目标的绑定窗口。人格与投递窗口两项都就绪插件才运行。",
+        "type": "string",
+        "default": ""
+      },
+      "auto_bind": {
+        "description": "自动登记窗口绑定",
+        "hint": "开启后，任一窗口的用户说话都会自动绑定到当前人格（省去手填 umo）。默认关闭：只有「人格与窗口」页里显式添加的绑定才生效，未绑定窗口不会注入日程。",
+        "type": "bool",
+        "default": false
+      }
+    }
   },
-  "inject_enabled": {
-    "description": "启用日程注入",
-    "hint": "开启后，每次回复前会告诉模型「角色现在在做什么、刚做完什么、接下来做什么」，让角色的回答和生活状态对得上。",
-    "type": "bool",
-    "default": true
+  "inject": {
+    "description": "日程注入",
+    "hint": "每次回复前，告诉模型「角色此刻在做什么」，让回答和生活状态对得上。",
+    "items": {
+      "enabled": {
+        "description": "启用日程注入",
+        "hint": "开启后注入当前 / 刚才 / 稍后的日程片段与可分享碎片。",
+        "type": "bool",
+        "default": true
+      },
+      "mode": {
+        "description": "注入位置",
+        "hint": "tail = 追加在用户消息之后（推荐，不破坏模型前缀缓存）；system = 拼进系统提示词（部分不支持多模态内容块的模型需要选这个）。",
+        "type": "string",
+        "options": ["tail", "system"],
+        "labels": ["用户消息之后（推荐）", "系统提示词"],
+        "default": "tail"
+      },
+      "scopes": {
+        "description": "注入范围",
+        "hint": "哪些类型的窗口需要注入（仅影响注入，不会让角色在这些窗口主动发言）。",
+        "type": "list",
+        "items": {
+          "type": "string",
+          "options": ["private", "group"],
+          "labels": ["私聊", "群聊"]
+        },
+        "default": ["private", "group"]
+      },
+      "max_chars": {
+        "description": "注入字数上限",
+        "hint": "日程注入块的字符上限，超出截断，用来控制每轮多消耗的 token。",
+        "type": "int",
+        "default": 600
+      },
+      "lookback_minutes": {
+        "description": "「刚才」回溯范围（分钟）",
+        "hint": "上一个日程片段结束至今不超过这个时间才写成「刚才做过」，超过就当作翻篇。",
+        "type": "int",
+        "default": 90
+      },
+      "lookahead_minutes": {
+        "description": "「稍后」预告范围（分钟）",
+        "hint": "下一个日程片段开始时间距现在不超过这个值才写成「稍后要做」。太大容易提前剧透一整天。",
+        "type": "int",
+        "default": 180
+      },
+      "include_seed": {
+        "description": "注入可分享碎片",
+        "hint": "把日程条目里的「可分享碎片」也告诉模型，让它有具体的小事可说（主动消息有话可讲的来源）。",
+        "type": "bool",
+        "default": true
+      }
+    }
   },
-  "inject_mode": {
-    "description": "注入位置",
-    "hint": "tail = 追加在用户消息之后（推荐，不破坏模型的前缀缓存）；system = 拼进系统提示词（部分不支持多模态内容块的模型需要选这个）。",
-    "type": "string",
-    "options": ["tail", "system"],
-    "labels": ["用户消息之后（推荐）", "系统提示词"],
-    "default": "tail"
+  "schedule": {
+    "description": "日程生成",
+    "hint": "每天怎么排这一天的生活：作息、风格、世界观与避重。",
+    "items": {
+      "enabled": {
+        "description": "启用日程生成",
+        "hint": "关闭后不自动生成日程，已有的日程仍会被注入。",
+        "type": "bool",
+        "default": true
+      },
+      "time": {
+        "description": "每日生成时间",
+        "hint": "格式 HH:MM。当天过了这个点之后的第一次使用才触发生成（懒生成）；此前沿用昨天的日程，避免凌晨换日导致生活断裂。",
+        "type": "string",
+        "default": "07:30"
+      },
+      "sleep_start": {
+        "description": "入睡时间",
+        "hint": "格式 HH:MM。日程里这个时间之后到起床之间应是睡眠；睡眠片段不会产生主动消息。",
+        "type": "string",
+        "default": "23:30"
+      },
+      "sleep_end": {
+        "description": "起床时间",
+        "hint": "格式 HH:MM。",
+        "type": "string",
+        "default": "07:30"
+      },
+      "night_owl": {
+        "description": "允许夜猫子人设",
+        "hint": "开启后作息只作参考，模型可以让角色熬夜到深夜（适合夜行性设定）。关闭则深夜强制处于睡眠。",
+        "type": "bool",
+        "default": false
+      },
+      "item_min": {
+        "description": "条目数下限",
+        "hint": "生成结果少于这个数量会被判为质量不足并重试。",
+        "type": "int",
+        "default": 6
+      },
+      "item_max": {
+        "description": "条目数上限",
+        "hint": "提示词会要求模型的条目数控制在这个范围内。",
+        "type": "int",
+        "default": 14
+      },
+      "avoid_days": {
+        "description": "避重参考天数",
+        "hint": "生成时把这些天的日程活动喂给模型，要求今天不要重复。0 = 不参考历史。",
+        "type": "int",
+        "default": 3
+      },
+      "max_retry": {
+        "description": "质量重试次数",
+        "hint": "生成结果不合格（格式错、时序乱、太雷同）时的最大重试次数，用尽后走内置模板兜底，保证角色永远有日程。",
+        "type": "int",
+        "default": 2
+      },
+      "model": {
+        "description": "日程生成模型",
+        "hint": "留空 = 用该会话当前使用的模型。日程生成对文笔要求不高，可以用便宜的小模型。",
+        "type": "string",
+        "default": ""
+      },
+      "temperature": {
+        "description": "日程生成温度",
+        "hint": "越高越随机，0.8~1.2 比较合适。部分模型可能忽略该参数。",
+        "type": "float",
+        "default": 1.0
+      },
+      "style": {
+        "description": "日程风格",
+        "hint": "告诉模型你要什么样的生活节奏，例如「日常向，平静细碎」「学业向，以高中生活为主」。",
+        "type": "text",
+        "default": "日常向：以真实、细碎、有呼吸感的生活节奏为主，避免戏剧化和过分精彩的一天。"
+      },
+      "world": {
+        "description": "世界观设定",
+        "hint": "这个世界是什么样：时代、地点、技术、社会常识等。日程生成与主动消息都会参考它。",
+        "type": "text",
+        "default": ""
+      },
+      "character": {
+        "description": "角色补充设定",
+        "hint": "人格之外还需补充的设定：职业/学段、住址、常去的地方、家人朋友、作息习惯等。写得越具体，日程越贴人。",
+        "type": "text",
+        "default": ""
+      },
+      "forbidden": {
+        "description": "日程禁用内容",
+        "hint": "不希望出现在日程里的内容，例如「不要写工作压力」「不要涉及暴力」。一行一条。",
+        "type": "text",
+        "default": ""
+      }
+    }
   },
-  "inject_max_chars": {
-    "description": "注入字数上限",
-    "hint": "日程注入块的字符上限，超出会截断。用来控制每轮多消耗的 token。",
-    "type": "int",
-    "default": 600
+  "proactive": {
+    "description": "主动消息",
+    "hint": "什么时候可以主动找你，以及各种节流、免打扰与配图。",
+    "items": {
+      "enabled": {
+        "description": "启用主动消息",
+        "hint": "总开关。可在控制台或 /主动 off 临时关闭。",
+        "type": "bool",
+        "default": true
+      },
+      "interval_seconds": {
+        "description": "心跳间隔（秒）",
+        "hint": "调度循环检查一次的间隔，最小 30 秒。实际是否发言由各类限制与日程共同决定。",
+        "type": "int",
+        "default": 60
+      },
+      "daily_limit": {
+        "description": "每日主动上限",
+        "hint": "每天最多主动发起几次。0 = 不限制（不建议）。",
+        "type": "int",
+        "default": 6
+      },
+      "min_interval_minutes": {
+        "description": "两次主动最小间隔（分钟）",
+        "hint": "避免短时间内连续找用户。",
+        "type": "int",
+        "default": 45
+      },
+      "max_unanswered": {
+        "description": "连续未回复上限",
+        "hint": "用户连续多次没回就停止主动，直到用户再说话。0 = 不限制（容易变成骚扰）。",
+        "type": "int",
+        "default": 4
+      },
+      "quiet_start": {
+        "description": "免打扰开始",
+        "hint": "格式 HH:MM。支持跨天，例如 23:00 到次日 08:30。",
+        "type": "string",
+        "default": "23:00"
+      },
+      "quiet_end": {
+        "description": "免打扰结束",
+        "hint": "格式 HH:MM。",
+        "type": "string",
+        "default": "08:30"
+      },
+      "user_active_cooldown": {
+        "description": "用户刚说完话的静默（分钟）",
+        "hint": "用户刚发过消息的这段时间内不主动打扰（对话还没凉，不需要另起话题）。",
+        "type": "int",
+        "default": 10
+      },
+      "skip_sleeping": {
+        "description": "角色睡觉时不打扰",
+        "hint": "当前日程片段属于睡眠时，不发主动消息。",
+        "type": "bool",
+        "default": true
+      },
+      "seed_window": {
+        "description": "碎片有效期（分钟）",
+        "hint": "日程片段的「可分享碎片」在片段开始后这么久内有效，过期就不再拿它当话题。",
+        "type": "int",
+        "default": 90
+      },
+      "jitter": {
+        "description": "候选时间抖动（分钟）",
+        "hint": "下一个主动时间点 = 片段结束时间 + 0~该值 的随机抖动，让节奏不像定时闹钟。",
+        "type": "int",
+        "default": 20
+      },
+      "max_segments": {
+        "description": "最多拆成几条消息",
+        "hint": "主动消息最多拆成几条短消息连发（像真人打字）。1 = 不拆分。",
+        "type": "int",
+        "default": 3
+      },
+      "segment_delay": {
+        "description": "拆条发送间隔（秒）",
+        "hint": "多条消息之间的停顿时间。",
+        "type": "float",
+        "default": 1.5
+      },
+      "history_messages": {
+        "description": "参考最近对话条数",
+        "hint": "生成主动消息时，读取投递窗口最近多少条对话历史作为上下文。",
+        "type": "int",
+        "default": 10
+      },
+      "model": {
+        "description": "主动消息模型",
+        "hint": "留空 = 用该会话当前使用的模型。主动消息要有人味，建议用平时聊天的主力模型。",
+        "type": "string",
+        "default": ""
+      },
+      "extra_instruction": {
+        "description": "主动消息额外要求",
+        "hint": "追加到主动消息生成提示词里的额外要求，例如口癖、称呼方式、禁忌话题。留空则不加。",
+        "type": "text",
+        "default": ""
+      },
+      "image_enabled": {
+        "description": "主动消息可以配图",
+        "hint": "开启后，主动消息有一定概率随附一张图片。图片来自下面的图库目录（把用 comfyui-anima / nai 等生成好的图放进去即可），模型不会在线生成图片。",
+        "type": "bool",
+        "default": false
+      },
+      "image_dir": {
+        "description": "图库目录",
+        "hint": "存放候选图片的文件夹绝对路径，支持 jpg / jpeg / png / webp / gif。留空 = 使用插件数据目录下的 images 文件夹。文件名（去掉扩展名）会作为画面线索告诉模型。",
+        "type": "string",
+        "default": ""
+      },
+      "image_probability": {
+        "description": "配图概率",
+        "hint": "每次主动消息命中配图的概率（0~1）。0.25 = 大约每四次主动有一次带图。",
+        "type": "float",
+        "default": 0.25
+      },
+      "image_max_per_day": {
+        "description": "每日配图上限",
+        "hint": "每天最多随主动消息发几张图（0 = 不限制）。与「每日主动上限」独立计数。",
+        "type": "int",
+        "default": 2
+      }
+    }
   },
-  "inject_lookback_minutes": {
-    "description": "「刚才」回溯范围（分钟）",
-    "hint": "上一个日程片段结束至今不超过这个时间，才会写成「刚才做过」。超过就当作已经翻篇，不再提。",
-    "type": "int",
-    "default": 90
+  "prompt": {
+    "description": "提示词覆盖",
+    "hint": "完全替换内置模板的高级用法；留空即用内置版本，改坏了自己负责。",
+    "items": {
+      "plan": {
+        "description": "自定义日程生成提示词",
+        "hint": "填写后完全替换内置的日程生成提示词。可用占位符 {persona} {world} {character} {date} {weekday} {item_min} {item_max} {sleep_start} {sleep_end} {style} {forbidden} {recent} {today_tail}。",
+        "type": "text",
+        "default": ""
+      },
+      "proactive": {
+        "description": "自定义主动消息提示词",
+        "hint": "填写后完全替换内置的主动消息生成提示词（作为系统提示词；用户侧上下文仍由插件组装）。可用占位符 {persona} {current_block} {seed} {recent_chat} {last_proactive} {unanswered} {now} {extra}。",
+        "type": "text",
+        "default": ""
+      }
+    }
   },
-  "inject_lookahead_minutes": {
-    "description": "「稍后」预告范围（分钟）",
-    "hint": "下一个日程片段开始时间距现在不超过这个值，才会写成「稍后要去做」。太大容易让角色提前剧透一整天。",
-    "type": "int",
-    "default": 180
-  },
-  "inject_include_seed": {
-    "description": "注入可分享碎片",
-    "hint": "把日程条目里的「可分享碎片」也告诉模型，让它有具体的小事可说（这是主动消息有话可讲的来源）。",
-    "type": "bool",
-    "default": true
-  },
-
-  "schedule_enabled": {
-    "description": "启用日程生成",
-    "hint": "关闭后不会自动生成日程，已有的日程仍会被注入。",
-    "type": "bool",
-    "default": true
-  },
-  "schedule_time": {
-    "description": "每日生成时间",
-    "hint": "格式 HH:MM。当天过了这个点之后的第一次使用才会触发生成（懒生成，不是独立闹钟）。在此之前沿用昨天的日程，避免凌晨换日导致角色生活断裂。",
-    "type": "string",
-    "default": "07:30"
-  },
-  "schedule_item_min": {
-    "description": "日程条目数下限",
-    "hint": "生成结果少于这个数量会被判为质量不足并重试。",
-    "type": "int",
-    "default": 6
-  },
-  "schedule_item_max": {
-    "description": "日程条目数上限",
-    "hint": "提示词里会要求模型的条目数控制在这个范围内。",
-    "type": "int",
-    "default": 14
-  },
-  "schedule_sleep_start": {
-    "description": "入睡时间",
-    "hint": "格式 HH:MM。日程里这个时间之后到起床之间应是睡眠，睡眠片段不会产生主动消息。",
-    "type": "string",
-    "default": "23:30"
-  },
-  "schedule_sleep_end": {
-    "description": "起床时间",
-    "hint": "格式 HH:MM。",
-    "type": "string",
-    "default": "07:30"
-  },
-  "schedule_allow_night_owl": {
-    "description": "允许夜猫子人设",
-    "hint": "开启后，作息只作为参考，模型可以让角色熬夜到深夜（适合夜行性设定）。关闭则强制深夜处于睡眠。",
-    "type": "bool",
-    "default": false
-  },
-  "schedule_avoid_days": {
-    "description": "避重参考天数",
-    "hint": "生成时会把这些天最近的日程活动喂给模型，要求今天不要重复。0 = 不参考历史。",
-    "type": "int",
-    "default": 3
-  },
-  "schedule_max_retry": {
-    "description": "质量重试次数",
-    "hint": "生成结果不合格（格式错、时序乱、太雷同）时的最大重试次数。用尽后走内置模板兜底，保证角色永远有日程。",
-    "type": "int",
-    "default": 2
-  },
-  "schedule_style": {
-    "description": "日程风格",
-    "hint": "告诉模型你要的是什么样的生活节奏，例如「日常向，平静细碎」「学业向，以高中生活为主」。",
-    "type": "text",
-    "default": "日常向：以真实、细碎、有呼吸感的生活节奏为主，避免戏剧化和过分精彩的一天。"
-  },
-  "schedule_world": {
-    "description": "世界观设定",
-    "hint": "这个世界是什么样子的：时代、地点、技术、社会常识等。日程生成与主动消息都会参考它。",
-    "type": "text",
-    "default": ""
-  },
-  "schedule_character": {
-    "description": "角色补充设定",
-    "hint": "人格之外还需要补充的设定：职业/学段、住址、常去的地方、家人朋友、作息习惯、癖好等。写得越具体，日程越贴人。",
-    "type": "text",
-    "default": ""
-  },
-  "schedule_forbidden": {
-    "description": "日程禁用内容",
-    "hint": "不希望出现在日程里的内容，例如「不要写工作压力」「不要涉及暴力」。一行一条。",
-    "type": "text",
-    "default": ""
-  },
-  "schedule_model": {
-    "description": "日程生成模型",
-    "hint": "留空 = 用该会话当前使用的模型。日程生成对文笔要求不高，可以用便宜的小模型。",
-    "type": "string",
-    "default": ""
-  },
-  "schedule_temperature": {
-    "description": "日程生成温度",
-    "hint": "越高越随机。0.8~1.2 比较合适。",
-    "type": "float",
-    "default": 1.0
-  },
-
-  "proactive_enabled": {
-    "description": "启用主动消息",
-    "hint": "总开关。可在控制台或 /主动 off 临时关闭，不用改这里。",
-    "type": "bool",
-    "default": true
-  },
-  "proactive_interval_seconds": {
-    "description": "心跳间隔（秒）",
-    "hint": "调度循环检查一次的时间间隔，最小 30 秒。实际是否发言由各类限制与日程共同决定。",
-    "type": "int",
-    "default": 60
-  },
-  "proactive_daily_limit": {
-    "description": "每日主动上限",
-    "hint": "每天最多主动发起几次。0 = 不限制（不建议）。",
-    "type": "int",
-    "default": 6
-  },
-  "proactive_min_interval_minutes": {
-    "description": "两次主动最小间隔（分钟）",
-    "hint": "避免短时间内连续找用户。",
-    "type": "int",
-    "default": 45
-  },
-  "proactive_max_unanswered": {
-    "description": "连续未回复上限",
-    "hint": "用户连续多次没回，就停止主动，直到用户再说话。0 = 不限制（容易变成骚扰）。",
-    "type": "int",
-    "default": 4
-  },
-  "proactive_quiet_start": {
-    "description": "免打扰开始",
-    "hint": "格式 HH:MM。支持跨天，例如 23:00 到次日 08:30。",
-    "type": "string",
-    "default": "23:00"
-  },
-  "proactive_quiet_end": {
-    "description": "免打扰结束",
-    "hint": "格式 HH:MM。",
-    "type": "string",
-    "default": "08:30"
-  },
-  "proactive_user_active_cooldown_minutes": {
-    "description": "用户刚说完话的静默（分钟）",
-    "hint": "用户刚发过消息的这段时间内不主动打扰（对话还没凉，不需要另起话题）。",
-    "type": "int",
-    "default": 10
-  },
-  "proactive_skip_sleeping": {
-    "description": "角色睡觉时不打扰",
-    "hint": "当前日程片段属于睡眠时，不发主动消息。",
-    "type": "bool",
-    "default": true
-  },
-  "proactive_seed_window_minutes": {
-    "description": "碎片有效期（分钟）",
-    "hint": "日程片段的「可分享碎片」在片段开始后这么久内有效，过期就不再拿它当话题。",
-    "type": "int",
-    "default": 90
-  },
-  "proactive_jitter_minutes": {
-    "description": "候选时间抖动（分钟）",
-    "hint": "下一个主动时间点 = 片段结束时间 + 0~该值 的随机抖动，让节奏不像定时闹钟。",
-    "type": "int",
-    "default": 20
-  },
-  "proactive_max_segments": {
-    "description": "最多拆成几条消息",
-    "hint": "主动消息最多拆成几条短消息连发（像真人打字）。1 = 不拆分。",
-    "type": "int",
-    "default": 3
-  },
-  "proactive_segment_delay_seconds": {
-    "description": "拆条发送间隔（秒）",
-    "hint": "多条消息之间的停顿时间。",
-    "type": "float",
-    "default": 1.5
-  },
-  "proactive_history_messages": {
-    "description": "参考最近对话条数",
-    "hint": "生成主动消息时，读取投递窗口最近多少条对话历史作为上下文。",
-    "type": "int",
-    "default": 10
-  },
-  "proactive_model": {
-    "description": "主动消息模型",
-    "hint": "留空 = 用该会话当前使用的模型。主动消息要有人味，建议用平时聊天的主力模型。",
-    "type": "string",
-    "default": ""
-  },
-  "proactive_extra_instruction": {
-    "description": "主动消息额外要求",
-    "hint": "追加到主动消息生成提示词里的额外要求，例如口癖、称呼方式、禁忌话题。留空则不加。",
-    "type": "text",
-    "default": ""
-  },
-  "proactive_image_enabled": {
-    "description": "主动消息可以配图",
-    "hint": "开启后，主动消息有一定概率随附一张图片。图片来自下面的图库目录（把用 comfyui-anima / nai 等生成好的图放进去即可）。模型自己不会在线生成图片。",
-    "type": "bool",
-    "default": false
-  },
-  "proactive_image_dir": {
-    "description": "图库目录",
-    "hint": "存放候选图片的文件夹绝对路径，支持 jpg / jpeg / png / webp / gif。留空 = 使用插件数据目录下的 images 文件夹（data/plugin_data/astrbot_plugin_mine_chat/images，不存在会自动提示）。文件名（去掉扩展名）会作为画面线索告诉模型，例如「做饭.png」会让它知道图大概是做饭的场景。",
-    "type": "string",
-    "default": ""
-  },
-  "proactive_image_probability": {
-    "description": "配图概率",
-    "hint": "每次主动消息命中这张图的概率（0~1）。0.25 = 大约每四次主动有一次带图。过高会显得像图库机器人。",
-    "type": "float",
-    "default": 0.25
-  },
-  "proactive_image_max_per_day": {
-    "description": "每日配图上限",
-    "hint": "每天最多随主动消息发几张图（0 = 不限制）。与「每日主动上限」独立计数。",
-    "type": "int",
-    "default": 2
-  },
-
-  "prompt_plan_override": {
-    "description": "自定义日程生成提示词",
-    "hint": "高级用法：留空使用内置模板。填写后会完全替换内置的日程生成提示词，可用占位符 {persona} {world} {character} {date} {weekday} {item_min} {item_max} {sleep_start} {sleep_end} {style} {forbidden} {recent} {today_tail}。",
-    "type": "text",
-    "default": ""
-  },
-  "prompt_proactive_override": {
-    "description": "自定义主动消息提示词",
-    "hint": "高级用法：留空使用内置模板。填写后会完全替换内置的主动消息提示词，可用占位符 {persona} {current_block} {seed} {recent_chat} {last_proactive} {unanswered} {now} {extra}。",
-    "type": "text",
-    "default": ""
-  },
-
-  "log_retention": {
-    "description": "裁决日志保留条数",
-    "hint": "控制台「主动消息」页显示的裁决记录（发/不发及原因）。超过后自动清理最旧的。",
-    "type": "int",
-    "default": 2000
+  "advanced": {
+    "description": "高级",
+    "items": {
+      "log_retention": {
+        "description": "裁决日志保留条数",
+        "hint": "控制台「主动消息」页显示的裁决记录（发 / 不发及原因）。超过后自动清理最旧的。",
+        "type": "int",
+        "default": 2000
+      }
+    }
   }
 }

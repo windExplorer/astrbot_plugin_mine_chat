@@ -214,6 +214,8 @@ export interface PersonasPayload {
 }
 
 export interface ConfigItem {
+  /** 点路径，如 "persona.active"；保存时以它为键。 */
+  path: string;
   key: string;
   type: string;
   description: string;
@@ -226,8 +228,15 @@ export interface ConfigItem {
   item_labels?: string[];
 }
 
-export interface ConfigPayload {
+export interface ConfigGroup {
+  name: string;
+  description: string;
+  hint: string;
   items: ConfigItem[];
+}
+
+export interface ConfigPayload {
+  groups: ConfigGroup[];
   version: string;
 }
 

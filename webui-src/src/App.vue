@@ -10,7 +10,6 @@ import {
   NLayoutContent,
   NMenu,
   NTag,
-  NSpin,
   darkTheme,
 } from "naive-ui";
 import type { MenuOption } from "naive-ui";
@@ -78,11 +77,9 @@ function handleMenu(key: string) {
           </n-layout-sider>
 
           <n-layout-content class="content" :native-scrollbar="false">
-            <router-view v-slot="{ Component }">
-              <n-spin :show="false">
-                <component :is="Component" />
-              </n-spin>
-            </router-view>
+            <div class="page-wrap">
+              <router-view />
+            </div>
           </n-layout-content>
         </n-layout>
       </n-dialog-provider>
@@ -124,7 +121,11 @@ body,
   opacity: 0.7;
 }
 .content {
-  padding: 20px 24px 32px;
+  padding: 20px 24px 40px;
+}
+.page-wrap {
+  max-width: 1000px;
+  margin: 0 auto;
 }
 .page-title {
   margin: 0 0 4px;
