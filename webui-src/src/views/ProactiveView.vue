@@ -45,6 +45,8 @@ const decisionOptions = [
   { label: "已发送", value: "send" },
   { label: "未发送", value: "skip" },
   { label: "出错", value: "error" },
+  { label: "配图", value: "img" },
+  { label: "表情", value: "sticker" },
 ];
 
 async function loadStatus() {
@@ -116,6 +118,10 @@ onMounted(async () => {
 });
 
 const decisionTag = (decision: string) => {
+  if (decision === "img" || decision === "sticker") {
+    const label = decision === "img" ? "配图" : "表情";
+    return h(NTag, { size: "small", type: "info", bordered: false }, { default: () => label });
+  }
   const type = decision === "send" ? "success" : decision === "error" ? "error" : "warning";
   const label = decision === "send" ? "已发送" : decision === "error" ? "出错" : "未发送";
   return h(NTag, { size: "small", type, bordered: false }, { default: () => label });

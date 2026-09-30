@@ -579,6 +579,30 @@ def test_image_backends(c: Checker) -> None:
     c.check("心情与碎片可选", "犯困" in (real_prompt or "") and "拿铁" not in (en_prompt or ""))
 
 
+def test_channel_reason_codes(c: Checker) -> None:
+    """配图/表情裁决原因码：proactive.py 落库码 ↔ main.py 中文表 ↔ 前端 REASON_TEXT。"""
+    print("\n[12] 配图/表情原因码三处一致性")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    src_proactive = open(os.path.join(root, "proactive.py"), encoding="utf-8").read()
+    src_main = open(os.path.join(root, "main.py"), encoding="utf-8").read()
+    src_api = open(
+        os.path.join(root, "webui-src", "src", "api.ts"), encoding="utf-8"
+    ).read()
+
+    # 只抽 _record 调用里相邻的 decision+reason 字面量对，
+    # 避免把 status() 状态字典的 "sticker_enabled" 之类配置键误当原因码。
+    codes = sorted(
+        {
+            m.group(2)
+            for m in re.finditer(r'"(img|sticker)",\s*"((?:img|sticker)_[a-z]+)"', src_proactive)
+        }
+    )
+    c.check("proactive.py 里能抽出原因码", len(codes) >= 10)
+    for code in codes:
+        c.check(f"原因码 {code} 在 main.py 中文表", f'"{code}"' in src_main)
+        c.check(f"原因码 {code} 在前端 REASON_TEXT", code in src_api)
+
+
 def test_injection_gate(c: Checker) -> None:
     print("\n[11] 注入资格判定")
     ns = load_defs(
@@ -722,6 +746,7 @@ def main() -> int:
     test_config_paths(checker)
     test_routine(checker)
     test_image_backends(checker)
+    test_channel_reason_codes(checker)
     test_injection_gate(checker)
 
     print(f"\n共 {checker.count} 项检查，失败 {len(checker.failures)} 项")

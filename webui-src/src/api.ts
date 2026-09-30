@@ -375,6 +375,21 @@ export const REASON_TEXT: Record<string, string> = {
   empty: "模型没产出内容",
   send_failed: "消息未送达",
   interrupted: "生成期间用户说话了",
+  // 配图通道（decision=img）
+  img_ok: "这条带了配图",
+  img_off: "配图未开启或概率为 0",
+  img_dice: "配图掷骰未命中",
+  img_limit: "今日配图已达上限",
+  img_no_event: "萌绘出图缺用户事件（先聊一句）",
+  img_dir_empty: "本地图库为空或不可读",
+  img_fail: "配图生成失败",
+  // 表情通道（decision=sticker）
+  sticker_ok: "这条带了表情",
+  sticker_off: "表情未开启或概率为 0",
+  sticker_dice: "表情掷骰未命中",
+  sticker_limit: "今日表情已达上限",
+  sticker_fail: "表情拉取失败（未装 moe_meme 或网络失败）",
+  sticker_yield: "表情让位给了配图（一条消息只带一张图）",
 };
 
 export function reasonText(reason: string): string {

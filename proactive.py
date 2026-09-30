@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import time
 from datetime import date as date_cls, datetime, timedelta
@@ -395,12 +396,16 @@ class ProactiveService:
             return False, "no_umo"
 
         before_user_at = state.get("last_user_at")
-        image_plan = await self._plan_image(settings, state, info)
+        image_plan = await self._plan_image(persona_id, settings, state, info)
         # 表情包是独立通道（独立概率/独立计数）；生图命中时让位，同一条消息只附一张图。
         sticker_path = ""
         if image_plan is None:
-            sticker = await self._plan_sticker(settings, state)
+            sticker = await self._plan_sticker(persona_id, settings, state)
             sticker_path = str(sticker or "")
+        else:
+            await self._record(
+                persona_id, "sticker", "sticker_yield", umo, throttle=True
+            )
 
         try:
             texts = await self.composer.generate(
@@ -500,6 +505,7 @@ class ProactiveService:
 
     async def _plan_image(
         self,
+        persona_id: str,
         settings: Settings,
         state: dict[str, Any],
         info: dict[str, Any],
@@ -508,12 +514,17 @@ class ProactiveService:
 
         掷骰与每日上限对所有后端一致；anima 出图耗时较长（最长 180s），
         拉图期间用户插嘴由 _do_send 现有的 last_user_at 检测兜住。
+
+        每个分支的结论都落一条裁决日志（decision=img），否则用户在控制台
+        只能看到「没发图」却查不到原因。未命中类都走节流（默认 10 分钟一条），
+        避免掷骰未中把日志刷满。
         """
-        if not settings.proactive_image_enabled:
-            return None
-        if settings.proactive_image_probability <= 0:
+        umo = str(info.get("umo") or "")
+        if not settings.proactive_image_enabled or settings.proactive_image_probability <= 0:
+            await self._record(persona_id, "img", "img_off", umo, throttle=True)
             return None
         if random.random() > settings.proactive_image_probability:
+            await self._record(persona_id, "img", "img_dice", umo, throttle=True)
             return None
 
         now_dt = datetime.now()
@@ -523,6 +534,7 @@ class ProactiveService:
         )
         limit = settings.proactive_image_max_per_day
         if limit > 0 and used >= limit:
+            await self._record(persona_id, "img", "img_limit", umo, throttle=True)
             return None
 
         backend = (settings.proactive_image_backend or "local").strip().lower()
@@ -534,6 +546,7 @@ class ProactiveService:
                     "生图方式为 ComfyUI萌绘，但还没有任何用户消息事件可复用——"
                     "先和角色聊一句再开启生图"
                 )
+                await self._record(persona_id, "img", "img_no_event", umo, throttle=True)
                 return None
             current = info.get("current") or info.get("previous") or {}
             activity = str(current.get("activity") or "").strip()
@@ -558,7 +571,11 @@ class ProactiveService:
                 negative_prompt=settings.proactive_image_negative_prompt,
             )
             if not path:
+                await self._record(persona_id, "img", "img_fail", umo, throttle=True)
                 return None
+            await self._record(
+                persona_id, "img", "img_ok", umo, content=f"anima {os.path.basename(path)}"
+            )
             return {"kind": "anima", "path": path, "desc": ""}
 
         # 本地图库（默认后端）
@@ -569,25 +586,32 @@ class ProactiveService:
                 f"生图方式为本地图库，但图库目录为空或不可读（{directory or '未配置'}）——"
                 "把图片放进去即可，无需重启"
             )
+            await self._record(persona_id, "img", "img_dir_empty", umo, throttle=True)
             return None
         path = choose_image_file(files)
         if not path:
+            await self._record(persona_id, "img", "img_fail", umo, throttle=True)
             return None
+        await self._record(
+            persona_id, "img", "img_ok", umo, content=f"local {os.path.basename(path)}"
+        )
         return {"kind": "local", "path": path, "desc": image_desc_from_path(path)}
 
     async def _plan_sticker(
-        self, settings: Settings, state: dict[str, Any]
+        self, persona_id: str, settings: Settings, state: dict[str, Any]
     ) -> str | None:
         """表情包通道（与生图独立）：命中则返回本地缓存路径。
 
         调用方保证：生图命中时不再调用本函数（同一条消息只附一张图，
-        生图优先——表情包让位且不消耗当日计数）。
+        生图优先——表情包让位且不消耗当日计数，让位本身由调用方落日志）。
+
+        与 _plan_image 一样，每个分支都落一条裁决日志（decision=sticker）。
         """
-        if not settings.proactive_sticker_enabled:
-            return None
-        if settings.proactive_sticker_probability <= 0:
+        if not settings.proactive_sticker_enabled or settings.proactive_sticker_probability <= 0:
+            await self._record(persona_id, "sticker", "sticker_off", "", throttle=True)
             return None
         if random.random() > settings.proactive_sticker_probability:
+            await self._record(persona_id, "sticker", "sticker_dice", "", throttle=True)
             return None
 
         today = datetime.now().date().isoformat()
@@ -596,11 +620,21 @@ class ProactiveService:
         )
         limit = settings.proactive_sticker_max_per_day
         if limit > 0 and used >= limit:
+            await self._record(persona_id, "sticker", "sticker_limit", "", throttle=True)
             return None
 
-        return await fetch_meme_image(
+        path = await fetch_meme_image(
             settings.proactive_sticker_token, self._meme_cache_dir
         )
+        if not path:
+            # fetch_meme_image 内部区分了「未安装 moe_meme」与「拉取失败」，
+            # 都只 info 级日志；这里落一条可见的裁决，用户才知道表情通道其实失败了。
+            await self._record(persona_id, "sticker", "sticker_fail", "", throttle=True)
+            return None
+        await self._record(
+            persona_id, "sticker", "sticker_ok", "", content=os.path.basename(path)
+        )
+        return path
 
     # ---------------------------------------------------------------- #
     # 排期
