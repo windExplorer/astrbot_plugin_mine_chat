@@ -16,7 +16,7 @@ webui-src/dist/
 webui-src/src/version.ts
 
 # 本地临时文件
-cm_tmp.txt
+cm_tmp*.txt
 _tmp_*
 *.local
 .reasonix/
