@@ -384,6 +384,7 @@ export const REASON_TEXT: Record<string, string> = {
   img_no_event: "萌绘出图缺用户事件（先聊一句）",
   img_dir_empty: "本地图库为空或不可读",
   img_fail: "配图生成失败",
+  media_failed: "命中了配图/表情但获取失败，本次连文字一起取消",
   // 表情通道（decision=sticker）
   sticker_ok: "这条带了表情",
   sticker_off: "表情未开启或概率为 0",

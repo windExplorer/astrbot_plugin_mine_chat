@@ -292,6 +292,8 @@ class ScheduleService:
         self.resolver = resolver
         self._settings_getter = settings_getter
         self._locks: dict[str, asyncio.Lock] = {}
+        # 自动提取的世界观/角色设定（成功 7 天，失败 30 分钟内不重复尝试）
+        self._profile_memo: dict[str, tuple[float, str, str]] = {}
 
     # ---------------------------------------------------------------- #
     def _lock_for(self, persona_id: str) -> asyncio.Lock:
@@ -470,6 +472,103 @@ class ScheduleService:
         return plan or {"persona_id": persona_id, "plan_date": plan_date, "items": items}
 
     # ---------------------------------------------------------------- #
+    _PROFILE_TTL_SECONDS = 7 * 24 * 3600.0
+    _PROFILE_FAIL_TTL_SECONDS = 30 * 60.0
+
+    async def _resolve_world_character(
+        self, persona_id: str, settings: Settings
+    ) -> tuple[str, str]:
+        """世界观/角色设定：配置 > 自动提取缓存 > 现场从人格提示词提炼。
+
+        用户没填配置时，用 LLM 从人格系统提示词提炼一份并缓存（meta 表，
+        7 天刷新），避免「没填就退化成泛化普通人生活」。提取失败只在内存里
+        记 30 分钟，之后有机会重试，但不写库（不把失败固化）。
+        """
+        world = settings.schedule_world.strip()
+        character = settings.schedule_character.strip()
+        if world or character:
+            return world, character
+
+        memo = self._profile_memo.get(persona_id)
+        if memo:
+            ts, memo_world, memo_character = memo
+            ttl = (
+                self._PROFILE_TTL_SECONDS
+                if (memo_world or memo_character)
+                else self._PROFILE_FAIL_TTL_SECONDS
+            )
+            if time.time() - ts < ttl:
+                return memo_world, memo_character
+
+        key = f"auto_profile:{persona_id}"
+        try:
+            cached = await self.store.get_meta(key)
+        except Exception:  # noqa: BLE001
+            cached = None
+        if cached:
+            try:
+                data = json.loads(cached)
+                ts = float(data.get("ts") or 0.0)
+                if time.time() - ts < self._PROFILE_TTL_SECONDS:
+                    memo_world = str(data.get("world") or "")
+                    memo_character = str(data.get("character") or "")
+                    self._profile_memo[persona_id] = (ts, memo_world, memo_character)
+                    return memo_world, memo_character
+            except (ValueError, TypeError):
+                pass
+
+        persona_prompt = await self.resolver.persona_prompt(persona_id)
+        if not persona_prompt.strip():
+            self._profile_memo[persona_id] = (time.time(), "", "")
+            return "", ""
+        try:
+            text = await llm_mod.chat_text(
+                self.context,
+                model_id=settings.schedule_model,
+                system_prompt="你是一位角色设定整理师，只输出被要求格式的内容。",
+                prompt=prompts.build_profile_extract_prompt(persona_prompt[:3000]),
+                temperature=0.4,
+                timeout=90.0,
+            )
+        except llm_mod.LLMError as exc:
+            logger.warning(
+                "mine_chat: 自动提取世界观失败（%s 分钟内不重试）persona=%s: %s",
+                int(self._PROFILE_FAIL_TTL_SECONDS / 60),
+                persona_id,
+                exc,
+            )
+            self._profile_memo[persona_id] = (time.time(), "", "")
+            return "", ""
+        world, character = prompts.parse_profile_text(text)
+        if not world and not character:
+            logger.warning(
+                "mine_chat: 自动提取世界观为空 persona=%s（人格提示词可能不含设定信息），"
+                "建议在配置页手动填写「世界观 / 角色补充设定」",
+                persona_id,
+            )
+            self._profile_memo[persona_id] = (time.time(), "", "")
+            return "", ""
+        now_ts = time.time()
+        try:
+            await self.store.set_meta(
+                key,
+                json.dumps(
+                    {"world": world, "character": character, "ts": now_ts},
+                    ensure_ascii=False,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("mine_chat: 缓存自动世界观失败: %s", exc)
+        self._profile_memo[persona_id] = (now_ts, world, character)
+        logger.info(
+            "mine_chat: 已从人格提示词自动提取世界观/角色设定 persona=%s"
+            "（world %d 字 / character %d 字，7 天后刷新；配置页可覆盖）",
+            persona_id,
+            len(world),
+            len(character),
+        )
+        return world, character
+
     async def _build_prompt(
         self,
         persona_id: str,
@@ -506,10 +605,11 @@ class ScheduleService:
             else "深夜必须处于睡眠状态，除非角色设定明确是夜班。"
         )
 
+        world, character = await self._resolve_world_character(persona_id, settings)
         body = prompts.build_plan_user(
             persona=persona_prompt,
-            world=settings.schedule_world,
-            character=settings.schedule_character,
+            world=world,
+            character=character,
             date_text=target.strftime("%Y年%m月%d日"),
             weekday_text=_WEEKDAY_NAMES[target.weekday()],
             calendar_hint=calendar_hint(target),

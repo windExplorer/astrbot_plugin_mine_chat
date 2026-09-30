@@ -417,16 +417,37 @@ class ProactiveService:
             return False, "no_umo"
 
         before_user_at = state.get("last_user_at")
-        image_plan = await self._plan_image(persona_id, settings, state, info)
+        image_plan, image_hit, image_note = await self._plan_image(
+            persona_id, settings, state, info
+        )
         # 表情包是独立通道（独立概率/独立计数）；生图命中时让位，同一条消息只附一张图。
-        sticker_path = ""
+        sticker_path = sticker_url = ""
         if image_plan is None:
-            sticker = await self._plan_sticker(persona_id, settings, state)
-            sticker_path = str(sticker or "")
+            (
+                sticker_path,
+                sticker_url,
+                sticker_hit,
+                sticker_note,
+                _sticker_no_api,
+            ) = await self._plan_sticker(persona_id, settings, state)
         else:
             await self._record(
                 persona_id, "sticker", "sticker_yield", umo, throttle=True
             )
+
+        # 命中了媒体（角色想要发图/表情）却没拿到：整条取消，文字也不发——
+        # 「说了一段话却没带上图」比「什么都没说」更出戏。
+        media_notes: list[str] = []
+        if image_hit and not (image_plan and image_plan.get("path")):
+            media_notes.append(f"配图：{image_note or '获取失败'}")
+        if sticker_hit and not (sticker_path or sticker_url):
+            media_notes.append(f"表情：{sticker_note or '获取失败'}")
+        if media_notes:
+            await self._record(
+                persona_id, "skip", "media_failed", umo, content="；".join(media_notes)
+            )
+            await self._reschedule(persona_id)
+            return False, "media_failed"
 
         try:
             texts = await self.composer.generate(
@@ -467,6 +488,7 @@ class ProactiveService:
             texts,
             delay=settings.proactive_segment_delay,
             image_path=image_path or sticker_path or None,
+            image_url=sticker_url or None,
         )
         if not delivered:
             await self._record(persona_id, "error", "send_failed", umo)
@@ -530,8 +552,12 @@ class ProactiveService:
         settings: Settings,
         state: dict[str, Any],
         info: dict[str, Any],
-    ) -> dict[str, Any] | None:
+    ) -> tuple[dict[str, Any] | None, bool, str]:
         """决定这次主动消息要不要带图、用哪个后端拿图（生成前调用）。
+
+        返回 (配图计划 | None, 是否「命中想要图」, 失败说明)。
+        hit=True 表示本次掷骰已命中（角色想要发图）——若最终没拿到图，
+        调用方应整条取消消息（media_failed），而不是发一条纯文字。
 
         掷骰与每日上限对所有后端一致；anima 出图耗时较长（最长 180s），
         拉图期间用户插嘴由 _do_send 现有的 last_user_at 检测兜住。
@@ -543,10 +569,10 @@ class ProactiveService:
         umo = str(info.get("umo") or "")
         if not settings.proactive_image_enabled or settings.proactive_image_probability <= 0:
             await self._record(persona_id, "img", "img_off", umo, throttle=True)
-            return None
+            return None, False, ""
         if random.random() > settings.proactive_image_probability:
             await self._record(persona_id, "img", "img_dice", umo, throttle=True)
-            return None
+            return None, False, ""
 
         now_dt = datetime.now()
         today = now_dt.date().isoformat()
@@ -556,7 +582,7 @@ class ProactiveService:
         limit = settings.proactive_image_max_per_day
         if limit > 0 and used >= limit:
             await self._record(persona_id, "img", "img_limit", umo, throttle=True)
-            return None
+            return None, False, ""
 
         backend = (settings.proactive_image_backend or "local").strip().lower()
 
@@ -576,7 +602,7 @@ class ProactiveService:
                     "生图方式为 ComfyUI萌绘，但主窗口 umo 无效，无法构造出图事件"
                 )
                 await self._record(persona_id, "img", "img_no_event", umo, throttle=True)
-                return None
+                return None, True, "无法构造出图事件（主窗口 umo 无效）"
             current = info.get("current") or info.get("previous") or {}
             activity = str(current.get("activity") or "").strip()
             seed = str(info.get("seed") or "").strip()
@@ -601,11 +627,11 @@ class ProactiveService:
             )
             if not path:
                 await self._record(persona_id, "img", "img_fail", umo, throttle=True)
-                return None
+                return None, True, "萌绘出图失败"
             await self._record(
                 persona_id, "img", "img_ok", umo, content=f"anima {os.path.basename(path)}"
             )
-            return {"kind": "anima", "path": path, "desc": ""}
+            return {"kind": "anima", "path": path, "desc": ""}, True, ""
 
         # 本地图库（默认后端）
         directory = str(settings.proactive_image_dir or "").strip() or self._default_image_dir
@@ -616,32 +642,37 @@ class ProactiveService:
                 "把图片放进去即可，无需重启"
             )
             await self._record(persona_id, "img", "img_dir_empty", umo, throttle=True)
-            return None
+            return None, True, "本地图库为空或不可读"
         path = choose_image_file(files)
         if not path:
             await self._record(persona_id, "img", "img_fail", umo, throttle=True)
-            return None
+            return None, True, "本地图库选图失败"
         await self._record(
             persona_id, "img", "img_ok", umo, content=f"local {os.path.basename(path)}"
         )
-        return {"kind": "local", "path": path, "desc": image_desc_from_path(path)}
+        return {"kind": "local", "path": path, "desc": image_desc_from_path(path)}, True, ""
 
     async def _plan_sticker(
         self, persona_id: str, settings: Settings, state: dict[str, Any]
-    ) -> str | None:
-        """表情包通道（与生图独立）：命中则返回本地缓存路径。
+    ) -> tuple[str, str, bool, str, bool]:
+        """表情包通道（与生图独立）。
+
+        返回 (本地路径 | "", 票券链 URL | "", 是否「命中想要表情」, 失败说明, moe_meme 是否不可用)。
+        hit=True 表示掷骰已命中且 moe_meme 可用——若最终图/URL 都没拿到，
+        调用方应整条取消消息。moe_meme 不可用（no_api）时通道视为未命中，
+        文字照发（没装插件不该惩罚文字消息）。
 
         调用方保证：生图命中时不再调用本函数（同一条消息只附一张图，
         生图优先——表情包让位且不消耗当日计数，让位本身由调用方落日志）。
 
-        与 _plan_image 一样，每个分支都落一条裁决日志（decision=sticker）。
+        每个分支都落一条裁决日志（decision=sticker）。
         """
         if not settings.proactive_sticker_enabled or settings.proactive_sticker_probability <= 0:
             await self._record(persona_id, "sticker", "sticker_off", "", throttle=True)
-            return None
+            return "", "", False, "", False
         if random.random() > settings.proactive_sticker_probability:
             await self._record(persona_id, "sticker", "sticker_dice", "", throttle=True)
-            return None
+            return "", "", False, "", False
 
         today = datetime.now().date().isoformat()
         used = (
@@ -650,31 +681,32 @@ class ProactiveService:
         limit = settings.proactive_sticker_max_per_day
         if limit > 0 and used >= limit:
             await self._record(persona_id, "sticker", "sticker_limit", "", throttle=True)
-            return None
+            return "", "", False, "", False
 
-        path, note, no_api = await fetch_meme_image_via_plugin(self.context)
-        if path is None:
-            # 跨插件 API 不可用（moe_meme 未安装/未激活/v0.2.0 以下）才走直连兜底
-            direct = await fetch_meme_image(
-                settings.proactive_sticker_token, self._meme_cache_dir
-            )
-            if direct:
-                path = direct
-        if not path:
-            # 落一条可见的裁决并带上具体原因：用户要能区分「插件不可用」与「拉取失败」
-            await self._record(
-                persona_id,
-                "sticker",
-                "sticker_no_api" if no_api else "sticker_fail",
-                "",
-                content=note,
-                throttle=True,
-            )
-            return None
+        path, url, note, no_api = await fetch_meme_image_via_plugin(self.context)
+        if not path and not url:
+            if no_api:
+                # 插件不可用：通道视为未命中，文字照发；直连兜底也只在这种情况才尝试
+                await self._record(persona_id, "sticker", "sticker_no_api", "", content=note, throttle=True)
+                direct = await fetch_meme_image(
+                    settings.proactive_sticker_token, self._meme_cache_dir
+                )
+                if direct:
+                    await self._record(
+                        persona_id, "sticker", "sticker_ok", "", content=os.path.basename(direct)
+                    )
+                    return direct, "", True, "", True
+                return "", "", False, "", True
+            await self._record(persona_id, "sticker", "sticker_fail", "", content=note, throttle=True)
+            return "", "", True, note or "表情拉取失败", False
         await self._record(
-            persona_id, "sticker", "sticker_ok", "", content=os.path.basename(path)
+            persona_id,
+            "sticker",
+            "sticker_ok",
+            "",
+            content=os.path.basename(path) if path else (url or "")[:120],
         )
-        return path
+        return path or "", url or "", True, "", False
 
     # ---------------------------------------------------------------- #
     # 排期

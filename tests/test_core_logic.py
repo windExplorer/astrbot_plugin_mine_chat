@@ -568,23 +568,31 @@ def test_image_backends(c: Checker) -> None:
     def _run(ctx):
         return asyncio.run(via_plugin(ctx))
 
-    path, note, no_api = _run(_Ctx(_Meta(_Inst())))
+    def _unpack(ctx):
+        path, url, note, no_api = asyncio.run(via_plugin(ctx))
+        return path, url, note, no_api
+
+    path, url, note, no_api = _unpack(_Ctx(_Meta(_Inst())))
     c.equal("跨插件取图：命中返回路径", path, "/tmp/s.png")
     c.check("命中时说明为空", note == "" and no_api is False)
     inst = _Inst()
-    _run(_Ctx(_Meta(inst)))
+    _unpack(_Ctx(_Meta(inst)))
     c.equal("跨插件取图默认全库随机（character 空串）", inst.args, "")
-    path, note, no_api = _run(_Ctx(None))
+    path, url, note, no_api = _unpack(_Ctx(None))
     c.check("未安装：路径空 + 标记不可用", path is None and no_api and "未安装" in note)
-    path, note, no_api = _run(_Ctx(_Meta(_Inst(), activated=False)))
+    path, url, note, no_api = _unpack(_Ctx(_Meta(_Inst(), activated=False)))
     c.check("插件停用：标记不可用", path is None and no_api and "停用" in note)
-    path, note, no_api = _run(_Ctx(_Meta(type("_NoApi", (), {})())))
+    path, url, note, no_api = _unpack(_Ctx(_Meta(type("_NoApi", (), {})())))
     c.check("旧版本无 API：标记不可用", path is None and no_api and "v0.2.0" in note)
-    path, note, no_api = _run(_Ctx(_Meta(_Inst(fail=True))))
+    path, url, note, no_api = _unpack(_Ctx(_Meta(_Inst(fail=True))))
     c.check("API 抛异常：不算不可用，说明带异常", path is None and not no_api and "boom" in note)
-    path, note, no_api = _run(_Ctx(_Meta(_Inst(path=""))))
+    class _EmptyDict:
+        async def api_random_sticker(self, character=""):
+            return {"path": None, "url": "", "character": "", "sticker_id": ""}
+
+    path, url, note, no_api = _unpack(_Ctx(_Meta(_EmptyDict())))
     c.check("API 返回空：不算不可用", path is None and not no_api and "返回空" in note)
-    path, note, no_api = _run(_Ctx(_Meta(_Inst()), boom=True))
+    path, url, note, no_api = _unpack(_Ctx(_Meta(_Inst()), boom=True))
     c.check("宿主接口异常：不算不可用", path is None and not no_api)
 
     ok_payload = json.dumps({"status": "ok", "image_paths": ["/tmp/a.png"]})
@@ -609,6 +617,16 @@ def test_image_backends(c: Checker) -> None:
 
     # 绘图提示词生成（静默，含画风与语种/类型约束）
     import prompts as prompts_mod
+
+    # 世界观/角色设定自动提取的解析
+    sample = "【世界观】\n近未来都市，AI 与人类共存。\n\n【角色补充设定】\n喜欢熬夜画画。\n"
+    w, ch = prompts_mod.parse_profile_text(sample)
+    c.equal("世界观段解析", w, "近未来都市，AI 与人类共存。")
+    c.equal("角色段解析", ch, "喜欢熬夜画画。")
+    w, ch = prompts_mod.parse_profile_text("【世界观】\n（无）\n【角色补充设定】\n（无）")
+    c.check("占位（无）视为空", w == "" and ch == "")
+    w, ch = prompts_mod.parse_profile_text("垃圾输出没有标记")
+    c.check("无标记输出解析为空", w == "" and ch == "")
 
     compose = prompts_mod.build_image_compose_prompt
     tags_prompt = compose(

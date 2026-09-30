@@ -111,6 +111,8 @@ def make_stub_event(umo: str) -> Any:
     一个极简事件即可。构造失败返回 None，调用方维持原有跳过逻辑。
     """
     try:
+        from types import SimpleNamespace
+
         from astrbot.core.platform.astr_message_event import AstrMessageEvent
         from astrbot.core.platform.message_session import MessageSession
 
@@ -118,6 +120,12 @@ def make_stub_event(umo: str) -> Any:
             def __init__(self, umo_: str):
                 self.session = MessageSession.from_str(umo_)
                 self.message_str = ""
+                # anima 的 _extract_images 会读 message_obj.message（取用户发的图，
+                # 主动出图场景下恒为空）；sender/group 兜底避免其它分支 AttributeError
+                self.message_obj = SimpleNamespace(
+                    message=[], message_id="", group_id="", sender=None, type=None
+                )
+                self.platform_meta = SimpleNamespace(name="mine_chat", id="mine_chat")
                 self.role = "member"
                 self.is_wake = False
                 self.is_at_or_wake_command = False
@@ -155,6 +163,12 @@ def make_stub_event(umo: str) -> Any:
                 return False
 
             async def send(self, *args, **kwargs):
+                return None
+
+            def chain_result(self, *args, **kwargs):
+                return None
+
+            def stop_event(self):
                 return None
 
         return _StubDrawEvent(umo)
@@ -292,37 +306,54 @@ def meme_cache_filename(sticker_id: str, fmt: str) -> str:
     return f"{safe}.{ext}"
 
 
-async def fetch_meme_image_via_plugin(context: Any) -> tuple[str | None, str, bool]:
-    """优先走萌萌表情包插件的跨插件 API 拿本地缓存图（moe_meme v0.2.0+）。
+async def fetch_meme_image_via_plugin(
+    context: Any,
+) -> tuple[str | None, str, str, bool]:
+    """优先走萌萌表情包插件的跨插件 API 拿表情（moe_meme v0.2.0+）。
 
-    返回 (本地路径 | None, 失败说明, 是否「moe_meme 不可用」)。
-    失败说明写进裁决日志的内容列，用户才能区分「没装插件」和「拉取失败」。
-    token、缓存目录、去重都由 moe_meme 自己管——联动是「调用」而不是
-    「复刻它的数据源」，站方凭据只应该在它那里配一份。
+    返回 (本地路径 | None, 远端票券链 URL | "", 失败说明, 是否「moe_meme 不可用」)。
+    v0.2.1+ 的 api_random_sticker 返回 dict（path + url，缓存失败时仍有票券链可发）；
+    v0.2.0 的 api_random_sticker_path 只返回路径。失败说明写进裁决日志的内容列，
+    用户才能区分「没装插件」和「拉取失败」。token、缓存目录、去重都由 moe_meme
+    自己管——联动是「调用」而不是「复刻它的数据源」。
     """
     try:
         meta = context.get_registered_star("astrbot_plugin_moe_meme")
     except Exception as exc:  # noqa: BLE001 - 宿主接口变动时按「不可用」处理
-        return None, f"宿主接口异常：{exc}", False
+        return None, "", f"宿主接口异常：{exc}", False
     if meta is None:
-        return None, "未安装 astrbot_plugin_moe_meme", True
+        return None, "", "未安装 astrbot_plugin_moe_meme", True
     if not getattr(meta, "activated", False):
-        return None, "astrbot_plugin_moe_meme 已安装但处于停用状态", True
-    fn = getattr(getattr(meta, "star_cls", None), "api_random_sticker_path", None)
-    if not callable(fn):
-        return None, "astrbot_plugin_moe_meme 版本低于 v0.2.0（无跨插件 API）", True
+        return None, "", "astrbot_plugin_moe_meme 已安装但处于停用状态", True
+    inst = getattr(meta, "star_cls", None)
+    fn_full = getattr(inst, "api_random_sticker", None)
+    if callable(fn_full):
+        try:
+            payload = await asyncio.wait_for(fn_full(), timeout=60.0)
+        except Exception as exc:  # noqa: BLE001 - API 失败交由调用方兜底
+            logger.info("mine_chat: 萌萌表情包跨插件取图失败: %s", exc)
+            return None, "", f"跨插件调用失败：{exc}", False
+        if not isinstance(payload, dict):
+            return None, "", "moe_meme api_random_sticker 返回异常（非 dict）", False
+        path = str(payload.get("path") or "") or None
+        url = str(payload.get("url") or "")
+        if not path and not url:
+            return (
+                None,
+                "",
+                "moe_meme 返回空（其数据源拉取失败，看 moe_meme 日志）",
+                False,
+            )
+        return path, url, "", False
+    fn_path = getattr(inst, "api_random_sticker_path", None)
+    if not callable(fn_path):
+        return None, "", "astrbot_plugin_moe_meme 版本低于 v0.2.0（无跨插件 API）", True
     try:
-        path = await asyncio.wait_for(fn(), timeout=60.0)
+        path = await asyncio.wait_for(fn_path(), timeout=60.0)
     except Exception as exc:  # noqa: BLE001 - API 失败交由调用方兜底
         logger.info("mine_chat: 萌萌表情包跨插件取图失败: %s", exc)
-        return None, f"跨插件调用失败：{exc}", False
-    if not path:
-        return (
-            None,
-            "moe_meme 返回空（其数据源拉取失败或缓存目录不可用，看 moe_meme 日志）",
-            False,
-        )
-    return str(path), "", False
+        return None, "", f"跨插件调用失败：{exc}", False
+    return (str(path) if path else None), "", "", False
 
 
 async def fetch_meme_image(token: str, cache_dir: str) -> str | None:
@@ -334,8 +365,12 @@ async def fetch_meme_image(token: str, cache_dir: str) -> str | None:
     """
     try:
         module = importlib.import_module("astrbot_plugin_moe_meme.wuwa_source")
-    except Exception:  # noqa: BLE001 - 未安装表情包插件
-        logger.info("mine_chat: 未安装 astrbot_plugin_moe_meme，表情联动不可用")
+    except Exception as exc:  # noqa: BLE001 - 导入失败的真因可能是包结构/依赖，别一律说「未安装」
+        logger.info(
+            "mine_chat: 表情直连兜底不可用（%s: %s）",
+            type(exc).__name__,
+            exc,
+        )
         return None
     source_cls = getattr(module, "WuwaSource", None)
     if source_cls is None:
@@ -559,10 +594,13 @@ class ProactiveComposer:
         *,
         delay: float = 1.5,
         image_path: str | None = None,
+        image_url: str | None = None,
     ) -> bool:
         """发送消息；任一条未送达即视为整体失败（调用方不应写回历史）。
 
-        ``image_path`` 非空时把图片附在最后一条消息里；图片组件构造失败就降级为纯文本。
+        ``image_path`` / ``image_url`` 非空时把图片附在最后一条消息里
+        （本地文件优先；URL 是 moe_meme 的票券链，约 16 分钟有效，只适合即取即发）；
+        图片组件构造失败就降级为纯文本。
         """
         if not texts:
             return False
@@ -578,9 +616,12 @@ class ProactiveComposer:
                 await asyncio.sleep(delay)
             components: list[Any] = [Plain(text)]
             is_last = index == len(texts) - 1
-            if is_last and image_path:
+            if is_last and (image_path or image_url):
                 try:
-                    components.append(Image.fromFileSystem(image_path))
+                    if image_path:
+                        components.append(Image.fromFileSystem(image_path))
+                    else:
+                        components.append(Image.fromURL(image_url or ""))
                 except Exception as exc:  # noqa: BLE001 - 图坏了就发纯文本
                     logger.warning("mine_chat: 图片组件构造失败，降级纯文本: %s", exc)
             try:
