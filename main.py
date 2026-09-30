@@ -153,6 +153,14 @@ class MineChatPlugin(Star):
     def settings(self) -> config_mod.Settings:
         return config_mod.Settings.from_config(self.config)
 
+    async def is_configured(self) -> bool:
+        """人格已选 + 投递窗口已绑定；缺任一项插件保持未启用。"""
+        settings = self.settings()
+        if not settings.persona_selected():
+            return False
+        primary = await self.resolver.primary_umo_for(settings.active_persona)
+        return bool(primary)
+
     # ------------------------------------------------------------------ #
     # 生命周期
     # ------------------------------------------------------------------ #
@@ -186,6 +194,16 @@ class MineChatPlugin(Star):
             (f"开/{settings.inject_mode}" if settings.inject_enabled else "关"),
             "开" if settings.proactive_enabled else "关",
         )
+        if not settings.persona_selected():
+            logger.warning(
+                "mine_chat: 插件保持未启用——尚未在控制台「人格与窗口」页选择人格"
+            )
+        elif not await self.is_configured():
+            logger.warning(
+                "mine_chat: 插件保持未启用——人格 %s 还没有绑定投递窗口"
+                "（在控制台绑定一个私聊窗口并设为投递目标）",
+                settings.active_persona,
+            )
         if not settings.schedule_world.strip() and not settings.schedule_character.strip():
             logger.warning(
                 "mine_chat: 尚未填写「世界观 / 角色补充设定」，日程会退化成泛化的普通人生活"
@@ -225,18 +243,21 @@ class MineChatPlugin(Star):
         if self._terminating or not self._ready:
             return
         settings = self.settings()
-        if not settings.enabled:
+        if not settings.enabled or not settings.persona_selected():
             return
         umo = getattr(event, "unified_msg_origin", "") or ""
         if not umo or scope_mod.umo_kind(umo) == "other":
             return
         try:
             persona_id = await self.resolver.resolve_persona_id(umo)
+            primary = await self.resolver.primary_umo_for(persona_id)
+            if not primary:
+                # 人格已选但没绑投递窗口：保持未启用，不做任何后续动作。
+                return
             await self.resolver.ensure_binding(
                 umo, persona_id, auto_register=settings.window_auto_bind
             )
-            primary = await self.resolver.primary_umo_for(persona_id)
-            if primary and primary == umo:
+            if primary == umo:
                 await self.proactive.note_user_activity(persona_id)
             self.proactive.kick()
             if settings.schedule_enabled:
@@ -260,6 +281,8 @@ class MineChatPlugin(Star):
         settings = self.settings()
         if not settings.enabled or not settings.inject_enabled:
             return
+        if not settings.persona_selected():
+            return
         umo = getattr(event, "unified_msg_origin", "") or ""
         if not umo:
             return
@@ -270,6 +293,17 @@ class MineChatPlugin(Star):
         await self.resolver.ensure_binding(
             umo, persona_id, auto_register=settings.window_auto_bind
         )
+        # 显式配置优先：只对已绑定到当前人格的窗口注入（auto_bind 开启时会顺手登记）。
+        binding = await self.store.get_binding(umo)
+        if binding is not None:
+            if str(binding.get("persona_id") or "") != persona_id:
+                return
+            if not int(binding.get("enabled") or 0):
+                return
+        elif not settings.window_auto_bind:
+            return
+        if not await self.resolver.primary_umo_for(persona_id):
+            return
 
         plan_date = await self.schedule_service.resolve_active_date(persona_id)
         plan = await self.store.get_plan(persona_id, plan_date)
@@ -333,6 +367,10 @@ class MineChatPlugin(Star):
         if not self._ready:
             yield event.plain_result("插件未就绪（数据库初始化失败），请查看 AstrBot 日志。")
             return
+        setup = await self.resolver.setup_state()
+        if not setup["configured"]:
+            yield event.plain_result(f"插件尚未完成配置，保持未启用：{setup['hint']}")
+            return
         settings = self.settings()
         if not settings.enabled:
             yield event.plain_result("萌萌日程当前已关闭（配置项「启用插件」）。")
@@ -373,6 +411,10 @@ class MineChatPlugin(Star):
             return
         if not self._ready:
             yield event.plain_result("插件未就绪（数据库初始化失败），请查看 AstrBot 日志。")
+            return
+        setup = await self.resolver.setup_state()
+        if not setup["configured"]:
+            yield event.plain_result(f"插件尚未完成配置，保持未启用：{setup['hint']}")
             return
         settings = self.settings()
         if not settings.enabled:

@@ -112,6 +112,16 @@ def test_settings(c: Checker) -> None:
     c.equal("forbidden 按行拆解", dirty.schedule_forbidden, ["不要写加班", "不要提到猫"])
     c.equal("心跳下限 30s", dirty.proactive_interval_seconds, 30)
 
+    # 显式配置驱动：active_persona 是启用前提，且兼容旧键 persona_override
+    unselected = config_mod.Settings.from_config({})
+    c.equal("未选人格", unselected.active_persona, "")
+    c.check("未选人格 → 未启用", not unselected.persona_selected())
+    legacy = config_mod.Settings.from_config({"persona_override": "旧人格"})
+    c.equal("兼容旧键 persona_override", legacy.active_persona, "旧人格")
+    c.check("旧键也视为已选", legacy.persona_selected())
+    selected = config_mod.Settings.from_config({"active_persona": "小满"})
+    c.check("新键生效", selected.persona_selected())
+
 
 def load_schedule():
     names = {

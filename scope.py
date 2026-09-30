@@ -82,7 +82,7 @@ class ScopeResolver:
         """解析某个窗口当前生效的人格 id（4 级优先级，命中即止）。"""
         settings = self._settings_getter()
 
-        override = _clean_persona_id(getattr(settings, "persona_override", ""))
+        override = _clean_persona_id(getattr(settings, "active_persona", ""))
         if override:
             return override
 
@@ -311,3 +311,39 @@ class ScopeResolver:
         if binding:
             return str(binding.get("persona_id") or "") or None
         return None
+
+    async def setup_state(self) -> dict[str, Any]:
+        """配置完成度：人格已选 + 投递窗口可用，两者都满足插件才正常运行。
+
+        缺任一项都视为「未启用」——钩子、调度、指令里的业务动作全部短路。
+        """
+        settings = self._settings_getter()
+        persona_id = _clean_persona_id(getattr(settings, "active_persona", ""))
+        if not persona_id:
+            return {
+                "configured": False,
+                "persona_id": "",
+                "persona_name": "",
+                "primary_umo": "",
+                "missing": "persona",
+                "hint": "还没有选择人格：请在本页「当前人格」处选择并保存。",
+            }
+        primary = await self.primary_umo_for(persona_id)
+        if not primary:
+            return {
+                "configured": False,
+                "persona_id": persona_id,
+                "persona_name": self.persona_display_name(persona_id),
+                "primary_umo": "",
+                "missing": "primary",
+                "hint": "人格已选，但还没有投递窗口：请在下方绑定一个私聊窗口"
+                "（platform:FriendMessage:QQ号）并勾选「设为主窗口」。",
+            }
+        return {
+            "configured": True,
+            "persona_id": persona_id,
+            "persona_name": self.persona_display_name(persona_id),
+            "primary_umo": primary,
+            "missing": "",
+            "hint": "",
+        }

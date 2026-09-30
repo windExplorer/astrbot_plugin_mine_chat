@@ -148,6 +148,10 @@ class ProactiveService:
         settings: Settings = self._settings_getter()
         if not settings.enabled or not settings.proactive_enabled:
             return
+        # 显式配置驱动：未选人格（或人格为空）时调度器什么都不做。
+        active_persona = str(getattr(settings, "active_persona", "") or "").strip()
+        if not active_persona:
+            return
         try:
             personas = await self.store.list_personas()
         except Exception as exc:  # noqa: BLE001
@@ -160,6 +164,8 @@ class ProactiveService:
                 return
             persona_id = str(persona.get("persona_id") or "")
             if not persona_id or not int(persona.get("enabled") or 0):
+                continue
+            if persona_id != active_persona:
                 continue
             lock = self._locks.get(persona_id)
             if lock is not None and lock.locked():

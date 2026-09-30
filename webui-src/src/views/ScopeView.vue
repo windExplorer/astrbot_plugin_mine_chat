@@ -21,10 +21,12 @@ import {
   apiBindingPrimary,
   apiBindingSave,
   apiBindings,
+  apiPersonaActivate,
   apiPersonaSave,
   apiPersonas,
   type BindingRow,
   type PersonaStored,
+  type SetupState,
 } from "../api";
 
 const message = useMessage();
@@ -33,7 +35,8 @@ const dialog = useDialog();
 const loading = ref(false);
 const stored = ref<PersonaStored[]>([]);
 const available = ref<{ persona_id: string; system_prompt: string }[]>([]);
-const overrideId = ref("");
+const setup = ref<SetupState | null>(null);
+const pickedPersona = ref<string | null>(null);
 const bindings = ref<BindingRow[]>([]);
 
 const newUmo = ref("");
@@ -46,12 +49,28 @@ async function load() {
     const [personaRes, bindingRes] = await Promise.all([apiPersonas(), apiBindings()]);
     stored.value = personaRes.stored;
     available.value = personaRes.available;
-    overrideId.value = personaRes.persona_override;
+    setup.value = personaRes.setup;
+    pickedPersona.value = personaRes.active_persona || null;
     bindings.value = bindingRes.items;
   } catch (e: any) {
     message.error(e?.message || String(e));
   } finally {
     loading.value = false;
+  }
+}
+
+async function activate() {
+  if (!pickedPersona.value) {
+    message.warning("请先选择一个人格。");
+    return;
+  }
+  try {
+    const res = await apiPersonaActivate(pickedPersona.value);
+    if (res.configured) message.success("已设为当前人格，插件已启用。");
+    else message.warning(`已设为当前人格，但插件仍未启用：${res.hint}`);
+    await load();
+  } catch (e: any) {
+    message.error(e?.message || String(e));
   }
 }
 
@@ -181,10 +200,33 @@ const bindingColumns = [
       日程与主动状态按「人格」归档：同一人格的私聊与群聊窗口共享同一份生活，主动消息只发往主窗口。
     </p>
 
-    <n-alert type="info" :bordered="false" class="section">
-      当前人格解析顺序：插件强制指定（{{ overrideId || "未设置" }}）→ 窗口绑定人格 → AstrBot 会话规则 → 默认人格。
-      窗口绑定会在用户说话时自动登记，也可以在这里手工维护。
-    </n-alert>
+    <n-card size="small" title="当前人格（启用条件）" class="section">
+      <n-alert
+        :type="setup?.configured ? 'info' : 'warning'"
+        :bordered="false"
+        class="section"
+      >
+        <template v-if="!setup?.configured">插件尚未启用：{{ setup?.hint }}</template>
+        <template v-else>
+          插件已启用：人格「{{ setup!.persona_name }}」，主动消息发往 {{ setup!.primary_umo }}。
+          同一人格的其他窗口（在下方绑定后）共享同一份日程。
+        </template>
+      </n-alert>
+      <n-space align="center" :wrap="true">
+        <n-select
+          v-model:value="pickedPersona"
+          size="small"
+          style="width: 240px"
+          :options="personaOptions()"
+          placeholder="选择人格"
+        />
+        <n-button size="small" type="primary" @click="activate">设为当前人格</n-button>
+      </n-space>
+      <div class="hint-text" style="margin-top: 8px">
+        只有「已选人格 + 绑定投递窗口」两项都完成，插件才会生成日程、注入上下文并主动发消息；
+        缺任一项都视为未启用，所有钩子与调度都会保持静默。
+      </div>
+    </n-card>
 
     <n-spin :show="loading">
       <n-card size="small" title="人格档案" class="section">

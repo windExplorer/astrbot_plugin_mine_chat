@@ -87,6 +87,14 @@ const logColumns = [
     <n-alert v-if="data && !data.enabled" type="warning" class="section" :bordered="false">
       插件当前处于关闭状态（配置项「启用插件」为关）。
     </n-alert>
+    <n-alert
+      v-if="data && data.enabled && data.configured === false"
+      type="warning"
+      class="section"
+      :bordered="false"
+    >
+      插件尚未启用：{{ data.setup_hint }}
+    </n-alert>
 
     <n-spin :show="loading">
       <n-grid :cols="2" :x-gap="16" :y-gap="16" class="section" responsive="screen" item-responsive>

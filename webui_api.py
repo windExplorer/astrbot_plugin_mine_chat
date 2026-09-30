@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from astrbot.api import logger
 
+from . import config as config_mod
 from . import schedule_view as view_mod
 
 try:  # quart 是 AstrBot 的运行期依赖
@@ -139,7 +140,10 @@ async def _plan_payload(plugin: Any, persona_id: str, plan_date: str) -> dict[st
 # --------------------------------------------------------------------------- #
 async def h_overview(plugin) -> dict:
     settings = plugin.settings()
-    persona_id = await _console_persona(plugin, _q("persona_id"))
+    setup = await plugin.resolver.setup_state()
+    persona_id = _q("persona_id") or setup["persona_id"]
+    if not persona_id:
+        persona_id = await _console_persona(plugin)
     personas = await plugin.store.list_personas()
 
     plan_date = await plugin.schedule_service.resolve_active_date(persona_id) if persona_id else ""
@@ -154,6 +158,9 @@ async def h_overview(plugin) -> dict:
         {
             "version": plugin.plugin_version,
             "enabled": settings.enabled,
+            "configured": setup["configured"],
+            "setup_hint": setup["hint"],
+            "active_persona": setup["persona_id"],
             "persona_id": persona_id,
             "persona_name": plugin.resolver.persona_display_name(persona_id) if persona_id else "",
             "personas": [
@@ -245,6 +252,7 @@ async def h_plan_update(plugin) -> dict:
 async def h_personas(plugin) -> dict:
     stored = await plugin.store.list_personas()
     available = await plugin.resolver.list_available_personas()
+    setup = await plugin.resolver.setup_state()
     return ok(
         {
             "stored": [
@@ -257,7 +265,38 @@ async def h_personas(plugin) -> dict:
                 for item in stored
             ],
             "available": available,
-            "persona_override": plugin.settings().persona_override,
+            "active_persona": setup["persona_id"],
+            "setup": setup,
+        }
+    )
+
+
+async def h_persona_activate(plugin) -> dict:
+    """把某个人格设为当前人格（写配置 active_persona）。
+
+    人格必须是 AstrBot 人格列表里真实存在的，防止手滑选了个不存在的名字。
+    """
+    body = await _payload()
+    persona_id = str(body.get("persona_id") or "").strip()
+    if not persona_id:
+        return err("缺少 persona_id")
+    available = {
+        item.get("persona_id")
+        for item in await plugin.resolver.list_available_personas()
+    }
+    if available and persona_id not in available:
+        return err(f"人格「{persona_id}」不在 AstrBot 人格列表里")
+    if not config_mod.save_value(plugin.config, "active_persona", persona_id):
+        return err("配置写回失败（save_config）")
+    await plugin.store.upsert_persona(
+        persona_id, plugin.resolver.persona_display_name(persona_id), True
+    )
+    setup = await plugin.resolver.setup_state()
+    return ok(
+        {
+            "active_persona": persona_id,
+            "configured": setup["configured"],
+            "hint": setup["hint"],
         }
     )
 
@@ -471,6 +510,7 @@ _ROUTES: list[tuple[str, Callable[..., Awaitable[dict]], list[str]]] = [
     ("/plan/refresh", h_plan_refresh, ["POST"]),
     ("/plan/update", h_plan_update, ["POST"]),
     ("/personas", h_personas, ["GET"]),
+    ("/personas/activate", h_persona_activate, ["POST"]),
     ("/personas/save", h_persona_save, ["POST"]),
     ("/bindings", h_bindings, ["GET"]),
     ("/bindings/save", h_binding_save, ["POST"]),

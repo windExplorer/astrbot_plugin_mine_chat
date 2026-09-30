@@ -5,23 +5,23 @@
     "type": "bool",
     "default": true
   },
-  "persona_override": {
-    "description": "强制指定人格",
-    "hint": "填人格名（AstrBot 人格列表里的名字）。留空 = 自动解析：优先用窗口当前绑定的人格，解析不到再回退默认人格。",
+  "active_persona": {
+    "description": "当前人格（必填）",
+    "hint": "本插件服务的人格名（AstrBot 人格列表里的名字），建议在控制台「人格与窗口」页直接选择。留空 = 插件未启用：不会生成日程、不会注入、不会主动发消息。设置人格后，还需要绑定一个私聊窗口作为投递目标，插件才会正常运行。",
     "type": "string",
     "default": ""
   },
   "primary_umo": {
     "description": "主动消息投递窗口",
-    "hint": "格式 platform:FriendMessage:QQ号，例如 aiocqhttp:FriendMessage:10001。留空 = 自动把首次见到的私聊窗口登记为投递目标。注意：一个角色只往这一个窗口主动发言。",
+    "hint": "格式 platform:FriendMessage:QQ号，例如 aiocqhttp:FriendMessage:10001。留空 = 使用「人格与窗口」页里标记为投递目标的绑定窗口。两者都没有时插件同样视为未启用。",
     "type": "string",
     "default": ""
   },
   "window_auto_bind": {
     "description": "自动登记窗口绑定",
-    "hint": "开启后，插件会自动记录「哪个窗口用的是哪个人格」，同人格的群聊窗口自动共享该人格的日程。关闭则只能在控制台手动绑定。",
+    "hint": "开启后，任一窗口的用户说话都会自动绑定到当前人格（省去手填 umo）。关闭（默认）则只有「人格与窗口」页里显式添加的绑定才生效——未绑定的窗口不会注入日程。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "inject_scopes": {
     "description": "日程注入范围",

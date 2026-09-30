@@ -125,9 +125,9 @@ class Settings:
 
     # 基础
     enabled: bool = True
-    persona_override: str = ""
+    active_persona: str = ""
     primary_umo: str = ""
-    window_auto_bind: bool = True
+    window_auto_bind: bool = False
 
     # 注入
     inject_scopes: tuple[str, ...] = ("private", "group")
@@ -210,7 +210,9 @@ class Settings:
 
         return cls(
             enabled=to_bool(get("enabled", True), True),
-            persona_override=to_str(get("persona_override", "")),
+            # 新键 active_persona；兼容发布初期用过的 persona_override。
+            active_persona=to_str(get("active_persona", ""))
+            or to_str(get("persona_override", "")),
             primary_umo=to_str(get("primary_umo", "")),
             window_auto_bind=to_bool(get("window_auto_bind", True), True),
             inject_scopes=tuple(scopes),
@@ -285,6 +287,10 @@ class Settings:
         return in_time_window(
             now_minute, self.proactive_quiet_start_min, self.proactive_quiet_end_min
         )
+
+    def persona_selected(self) -> bool:
+        """是否已选择人格（选人格是启用插件的必要条件之一）。"""
+        return bool(self.active_persona.strip())
 
 
 # --------------------------------------------------------------------------- #

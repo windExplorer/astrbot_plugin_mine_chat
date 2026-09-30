@@ -174,9 +174,21 @@ export interface BindingRow {
   last_seen_at: number;
 }
 
+export interface SetupState {
+  configured: boolean;
+  persona_id: string;
+  persona_name: string;
+  primary_umo: string;
+  missing: string;
+  hint: string;
+}
+
 export interface OverviewPayload {
   version: string;
   enabled: boolean;
+  configured: boolean;
+  setup_hint: string;
+  active_persona: string;
   persona_id: string;
   persona_name: string;
   personas: { persona_id: string; persona_name: string; enabled: boolean }[];
@@ -197,7 +209,8 @@ export interface PersonaStored {
 export interface PersonasPayload {
   stored: PersonaStored[];
   available: { persona_id: string; system_prompt: string }[];
-  persona_override: string;
+  active_persona: string;
+  setup: SetupState;
 }
 
 export interface ConfigItem {
@@ -241,6 +254,14 @@ export function apiPlanUpdate(itemId: number, patch: { activity?: string; mood?:
 
 export function apiPersonas() {
   return apiGet<PersonasPayload>("/personas");
+}
+
+/** 把某个人格设为当前人格（写配置 active_persona）。 */
+export function apiPersonaActivate(personaId: string) {
+  return apiPost<{ active_persona: string; configured: boolean; hint: string }>(
+    "/personas/activate",
+    { persona_id: personaId },
+  );
 }
 
 export function apiPersonaSave(personaId: string, enabled: boolean) {
