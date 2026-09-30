@@ -96,6 +96,40 @@ if ($notListed.Count -gt 0) {
 }
 Write-Host ("includeList check OK: all " + $topPy.Count + " top-level .py files are listed")
 
+# --- self-check: the config schema must be loadable by AstrBot ---
+# Real incident (v1.0.4/v1.0.5): group nodes were missing "type": "object", so
+# AstrBot's schema parser raised KeyError 'type' and the plugin could not be
+# installed at all. Every top-level node must declare a supported type.
+$schemaPath = Join-Path $root "_conf_schema.json"
+$supportedTypes = @("int", "float", "bool", "string", "text", "list", "file", "object", "template_list", "dict")
+$schema = Get-Content -Raw -Encoding UTF8 $schemaPath | ConvertFrom-Json
+$schemaErrors = @()
+foreach ($prop in $schema.PSObject.Properties) {
+    $node = $prop.Value
+    if ($node -isnot [PSCustomObject]) {
+        $schemaErrors += "$($prop.Name): node is not an object"
+        continue
+    }
+    $nodeType = $node.type
+    if (-not $nodeType) {
+        $schemaErrors += "$($prop.Name): missing 'type'"
+        continue
+    }
+    if ($supportedTypes -notcontains $nodeType) {
+        $schemaErrors += "$($prop.Name): unsupported type '$nodeType'"
+        continue
+    }
+    if ($nodeType -eq "object" -and -not $node.items) {
+        $schemaErrors += "$($prop.Name): object node has no items"
+    }
+}
+if ($schemaErrors.Count -gt 0) {
+    Write-Host "ERROR: _conf_schema.json is not loadable:" -ForegroundColor Red
+    foreach ($err in $schemaErrors) { Write-Host ("  - " + $err) -ForegroundColor Red }
+    exit 1
+}
+Write-Host "schema check OK: _conf_schema.json is loadable"
+
 # Built console must exist before packaging (run build_webui.ps1 first).
 $consoleIndex = Join-Path $root "pages/schedule-console/index.html"
 if (-not (Test-Path $consoleIndex)) {

@@ -1,5 +1,38 @@
 # 更新日志
 
+## v1.0.6（修复：配置 schema 分组节点缺 type，导致插件无法安装）
+
+**问题（用户装机实测暴露）**：安装 v1.0.4 / v1.0.5 时 AstrBot 直接报错：
+
+```
+加载插件「萌萌日程」(目录: astrbot_plugin_mine_chat, 版本: v1.0.5) 时出现问题，原因：'type'
+```
+
+两个版本**从未成功装载过**——v1.0.4 重构的嵌套 schema 里，六个分组节点（persona / inject /
+schedule / proactive / prompt / advanced）只写了 `description` / `hint` / `items`，
+**漏写了 `"type": "object"`**。
+
+**根因**：AstrBot 装载插件时用 `_config_schema_to_default_config` 解析 schema，
+对**每个节点**取 `v["type"]`（`astrbot_config.py:171`），缺 type 即 KeyError。
+而当时的本地自检全部绿灯——因为 `config.py` 的读取是普通字典操作（`migrate_legacy_config`
+/ `from_config` 的兼容兜底），完全不经过 schema；「schema 会被 AstrBot 在装载期解析」
+这个环节没有任何测试覆盖。
+
+**教训**：凡是 AstrBot 会在装载期消费的文件（schema、metadata），发布前必须用
+AstrBot 的解析规则验证，而不是只验证自己的代码怎么读它。
+
+### 修复
+
+- `_conf_schema.json` 六个分组节点补上 `"type": "object"`。
+
+### 防回归（两道新防线）
+
+- `tests/test_schema.py`（新增）：按 AstrBot `_parse_schema` 的遍历规则逐节点校验——
+  每个节点必须有 `type` 且属于 `DEFAULT_VALUE_MAP`、object 节点必须有非空 items、
+  list 子项描述须有 type、`widget=model` 的节点 type 必须是 string。当前 7 个顶层节点全过。
+- `build_zip.ps1` 打包前守卫：用 PowerShell `ConvertFrom-Json` 对 schema 做同样的
+  顶层检查（缺 type / 类型不支持 / object 缺 items 直接终止打包），机器上没有 Python 也能拦。
+
 ## v1.0.5（模型选择改为下拉可选）
 
 **需求**：模型选择相关的配置也可以加上。

@@ -6,6 +6,7 @@
     "default": true
   },
   "persona": {
+    "type": "object",
     "description": "人格与窗口",
     "hint": "插件按「人格」归档全部状态；投递窗口是主动消息唯一发往的私聊。",
     "items": {
@@ -30,6 +31,7 @@
     }
   },
   "inject": {
+    "type": "object",
     "description": "日程注入",
     "hint": "每次回复前，告诉模型「角色此刻在做什么」，让回答和生活状态对得上。",
     "items": {
@@ -85,6 +87,7 @@
     }
   },
   "schedule": {
+    "type": "object",
     "description": "日程生成",
     "hint": "每天怎么排这一天的生活：作息、风格、世界观与避重。",
     "items": {
@@ -182,6 +185,7 @@
     }
   },
   "proactive": {
+    "type": "object",
     "description": "主动消息",
     "hint": "什么时候可以主动找你，以及各种节流、免打扰与配图。",
     "items": {
@@ -309,6 +313,7 @@
     }
   },
   "prompt": {
+    "type": "object",
     "description": "提示词覆盖",
     "hint": "完全替换内置模板的高级用法；留空即用内置版本，改坏了自己负责。",
     "items": {
@@ -327,6 +332,7 @@
     }
   },
   "advanced": {
+    "type": "object",
     "description": "高级",
     "items": {
       "log_retention": {
