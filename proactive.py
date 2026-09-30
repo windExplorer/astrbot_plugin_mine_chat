@@ -18,6 +18,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from . import bus as bus_mod
 from . import llm as llm_mod
 from .config import Settings
 from .proactive_gen import (
@@ -829,6 +830,7 @@ class ProactiveService:
             self._skip_log_at[key] = now
         try:
             await self.store.add_log(persona_id, decision, reason, umo, content)
+            bus_mod.notify()  # 裁决日志有更新 → 控制台长轮询立刻返回
         except Exception as exc:  # noqa: BLE001
             logger.debug("mine_chat: 写入裁决日志失败: %s", exc)
 

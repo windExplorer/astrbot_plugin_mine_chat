@@ -350,6 +350,15 @@ export function apiConfig() {
   return apiGet<ConfigPayload>("/config");
 }
 
+// ---------------------------------------------------------------- 事件长轮询
+/** 挂住直到后端状态变化（version 前进）或超时；页面用它实现准实时刷新。 */
+export function apiEvents(since: number, timeoutMs = 40000) {
+  const p = new URLSearchParams();
+  p.set("since", String(since));
+  p.set("timeout", "25");
+  return apiGet<{ version: number; changed: boolean }>(`/events?${p.toString()}`, timeoutMs);
+}
+
 // ---------------------------------------------------------------- 世界观设定
 export interface AutoProfile {
   world: string;

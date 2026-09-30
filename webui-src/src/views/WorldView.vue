@@ -103,7 +103,7 @@ import {
   apiWorldSave,
   type WorldPayload,
 } from "../api";
-import { usePoll } from "../usePoll";
+import { useEvents } from "../useEvents";
 
 const message = useMessage();
 
@@ -209,7 +209,8 @@ async function rebuild() {
 }
 
 onMounted(load);
-usePoll(loadAuto, 20000);
+// 长轮询事件流：自动提取结果/知识库候选有变化即刻刷新，不打扰手动输入
+useEvents(loadAuto);
 </script>
 
 <style scoped>

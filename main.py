@@ -36,6 +36,7 @@ AUTHOR = "windExplorer"
 _RELOAD_MODULES = (
     "config",
     "store",
+    "bus",
     "llm",
     "kb",
     "prompts",

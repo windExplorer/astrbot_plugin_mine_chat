@@ -16,6 +16,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from . import bus as bus_mod
 from . import kb as kb_mod
 from . import llm as llm_mod
 from . import prompts
@@ -461,6 +462,7 @@ class ScheduleService:
             raw_json=raw_text[:20000],
             retry_after=retry_after,
         )
+        bus_mod.notify()  # 日程生成完成 → 控制台立刻刷新
         logger.info(
             "mine_chat: 日程已生成 persona=%s date=%s source=%s items=%s quality=%.0f",
             persona_id,

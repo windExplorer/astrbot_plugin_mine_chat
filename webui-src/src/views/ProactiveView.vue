@@ -27,7 +27,7 @@ import {
   type LogRow,
   type ProactiveStatus,
 } from "../api";
-import { usePoll } from "../usePoll";
+import { useEvents } from "../useEvents";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -117,9 +117,9 @@ onMounted(async () => {
   await loadStatus();
   await loadLogs();
 });
-// 后端主动消息异步发生：只轮询运行状态（今日已发/下次候选等），
+// 后端主动消息异步发生：长轮询事件流，只刷新运行状态（今日已发/下次候选等），
 // 不动裁决日志分页，避免打断阅读
-usePoll(loadStatus, 15000);
+useEvents(loadStatus);
 
 const decisionTag = (decision: string) => {
   if (decision === "img" || decision === "sticker") {

@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from astrbot.api import logger
 
+from . import bus as bus_mod
 from . import kb as kb_mod
 from . import schedule_view as view_mod
 
@@ -243,6 +244,7 @@ async def h_plan_update(plugin) -> dict:
         if body.get("message_seed") is None
         else str(body.get("message_seed")),
     )
+    bus_mod.notify()
     return ok({"updated": item_id})
 
 
@@ -626,6 +628,18 @@ def _bind(plugin, fn: Callable[[Any], Awaitable[dict]]) -> Callable[[], Awaitabl
     return handler
 
 
+async def h_events(plugin) -> dict:
+    """长轮询：挂住请求直到全局版本号前进或超时。
+
+    前端持有版本号循环调用；任何状态变化（发送主动消息/日程生成/世界观
+    提取等）都会让挂着的请求立刻返回，页面随即拉取自己的数据刷新。
+    """
+    since = int(_q("since", "-1") or -1)
+    timeout = _qi("timeout", 25, 5, 60)
+    version = await bus_mod.wait_version(since, float(timeout))
+    return ok({"version": version, "changed": version > since})
+
+
 async def h_world(plugin) -> dict:
     """世界观设定页数据：手动配置 + 自动提取缓存 + 知识库绑定与候选。"""
     persona_id = await _console_persona(plugin, _q("persona_id"))
@@ -679,6 +693,7 @@ async def h_world_save(plugin) -> dict:
         plugin.config.save_config()
     except Exception as exc:  # noqa: BLE001
         return err(f"配置已改内存但落盘失败: {exc}")
+    bus_mod.notify()
     return ok({"world": world, "character": character})
 
 
@@ -695,6 +710,7 @@ async def h_world_kb_save(plugin) -> dict:
             return err(f"知识库 {kb_name} 不存在或未加载")
     await plugin.store.set_persona_kb(persona_id, kb_name)
     plugin.schedule_service.invalidate_profile(persona_id)
+    bus_mod.notify()
     return ok({"kb_name": kb_name})
 
 
@@ -705,10 +721,12 @@ async def h_world_rebuild(plugin) -> dict:
     if not persona_id:
         return err("缺少 persona_id")
     world, character = await plugin.schedule_service.rebuild_profile(persona_id)
+    bus_mod.notify()
     return ok({"world": world, "character": character})
 
 
 _ROUTES: list[tuple[str, Callable[..., Awaitable[dict]], list[str]]] = [
+    ("/events", h_events, ["GET"]),
     ("/world", h_world, ["GET"]),
     ("/world/save", h_world_save, ["POST"]),
     ("/world/kb/save", h_world_kb_save, ["POST"]),
