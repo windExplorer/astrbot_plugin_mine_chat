@@ -14,7 +14,7 @@ import {
   useMessage,
 } from "naive-ui";
 
-import { apiConfig, apiConfigSave, type ConfigGroup } from "../api";
+import { apiConfig, apiConfigSave, apiProviders, type ConfigGroup } from "../api";
 
 /**
  * 配置页：完全由后端 `_conf_schema.json` 的分组结构驱动。
@@ -29,6 +29,8 @@ const saving = ref(false);
 const groups = ref<ConfigGroup[]>([]);
 const draft = ref<Record<string, any>>({});
 const initial = ref<Record<string, any>>({});
+/** AstrBot 已加载的对话模型（widget=model 的字段用它做下拉）。 */
+const providerOptions = ref<{ label: string; value: string }[]>([]);
 
 async function load() {
   loading.value = true;
@@ -41,6 +43,26 @@ async function load() {
     }
     draft.value = { ...values };
     initial.value = { ...values };
+
+    const needsProviders = res.groups.some((group) =>
+      group.items.some((item) => item.widget === "model"),
+    );
+    if (needsProviders) {
+      try {
+        const providers = await apiProviders();
+        providerOptions.value = [
+          { label: "跟随会话当前模型", value: "" },
+          ...providers.items.map((item) => ({
+            label: item.label + (item.is_default ? "（AstrBot 默认）" : ""),
+            value: item.id,
+          })),
+        ];
+      } catch {
+        providerOptions.value = [];
+      }
+    } else {
+      providerOptions.value = [];
+    }
   } catch (e: any) {
     message.error(e?.message || String(e));
   } finally {
@@ -136,6 +158,15 @@ function reset() {
           </div>
           <div class="field-control">
             <n-switch v-if="item.type === 'bool'" v-model:value="draft[item.path]" size="small" />
+            <n-select
+              v-else-if="item.widget === 'model' && providerOptions.length"
+              v-model:value="draft[item.path]"
+              size="small"
+              style="width: 340px"
+              filterable
+              :options="providerOptions"
+              placeholder="跟随会话当前模型"
+            />
             <n-input-number
               v-else-if="item.type === 'int' || item.type === 'float'"
               v-model:value="draft[item.path]"

@@ -406,6 +406,33 @@ def test_images(c: Checker) -> None:
     c.equal("空路径返回空", list_image_files(""), [])
 
 
+def test_config_paths(c: Checker) -> None:
+    print("\n[8] 配置点路径解析与写回")
+    ns = load_defs("webui_api.py", {"_resolve_spec", "_set_by_path"})
+    resolve = ns["_resolve_spec"]
+    set_by_path = ns["_set_by_path"]
+
+    schema = {
+        "enabled": {"type": "bool", "default": True},
+        "persona": {"type": "object", "items": {"active": {"type": "string"}}},
+    }
+    c.check("组内点路径命中", resolve(schema, "persona.active") == {"type": "string"})
+    c.equal("顶层键命中", resolve(schema, "enabled"), {"type": "bool", "default": True})
+    c.check("组内不存在的键", resolve(schema, "persona.nope") is None)
+    c.check("不存在的组", resolve(schema, "nope") is None)
+    c.check("对标量键取子路径", resolve(schema, "enabled.x") is None)
+
+    target: dict = {"enabled": True, "persona": {"active": "旧"}}
+    c.check("写组内键", set_by_path(target, "persona.active", "新"))
+    c.equal("组内值已更新", target["persona"]["active"], "新")
+    c.check("写顶层键", set_by_path(target, "enabled", False))
+    c.equal("顶层值已更新", target["enabled"], False)
+    empty: dict = {}
+    c.check("组不存在时自动建组", set_by_path(empty, "proactive.model", "m1"))
+    c.equal("自动建组生效", empty["proactive"]["model"], "m1")
+    c.check("非法层级拒绝", not set_by_path(empty, "a.b.c", 1))
+
+
 def main() -> int:
     checker = Checker()
     test_config_tools(checker)
@@ -415,6 +442,7 @@ def main() -> int:
     test_schedule_view(checker)
     test_scope_and_segments(checker)
     test_images(checker)
+    test_config_paths(checker)
 
     print(f"\n共 {checker.count} 项检查，失败 {len(checker.failures)} 项")
     if checker.failures:

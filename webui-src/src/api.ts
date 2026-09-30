@@ -222,10 +222,19 @@ export interface ConfigItem {
   hint: string;
   default: any;
   value: any;
+  /** 特殊控件：model = 从 AstrBot 已加载的对话模型里下拉选择。 */
+  widget?: string;
   options?: string[];
   labels?: string[];
   item_options?: string[];
   item_labels?: string[];
+}
+
+export interface ProviderOption {
+  id: string;
+  model: string;
+  label: string;
+  is_default: boolean;
 }
 
 export interface ConfigGroup {
@@ -338,6 +347,11 @@ export function apiLogs(params: {
 
 export function apiConfig() {
   return apiGet<ConfigPayload>("/config");
+}
+
+/** AstrBot 已加载的对话模型列表（模型选择下拉的数据源）。 */
+export function apiProviders() {
+  return apiGet<{ items: ProviderOption[]; default_id: string }>("/providers");
 }
 
 export function apiConfigSave(values: Record<string, any>) {

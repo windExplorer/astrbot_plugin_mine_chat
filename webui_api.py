@@ -449,6 +449,8 @@ def _spec_to_item(path: str, key: str, spec: dict[str, Any], value: Any) -> dict
         "default": spec.get("default"),
         "value": value,
     }
+    if "widget" in spec:
+        entry["widget"] = spec.get("widget")
     if "options" in spec:
         entry["options"] = spec.get("options")
     if "labels" in spec:
@@ -556,6 +558,58 @@ async def h_config_save(plugin) -> dict:
     return ok({"changed": changed})
 
 
+async def h_providers(plugin) -> dict:
+    """列出 AstrBot 已加载的对话模型（模型选择下拉的数据源）。
+
+    AstrBot 里一个「提供商」绑定一个模型，所以一项 = 一个可选模型，
+    显示成「提供商ID · 模型名」。只列已加载的：填了不存在的 id，
+    AstrBot 会直接放弃那次 LLM 请求。
+    """
+    context = plugin.context
+    providers: list[Any] = []
+    get_all = getattr(context, "get_all_providers", None)
+    if callable(get_all):
+        try:
+            providers = list(get_all() or [])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mine_chat: 读取提供商列表失败: %s", exc)
+
+    default_id = ""
+    get_default = getattr(context, "get_using_provider_async", None)
+    if callable(get_default):
+        default_provider = None
+        try:
+            default_provider = await get_default(None)
+        except Exception:  # noqa: BLE001
+            default_provider = None
+        if default_provider is not None:
+            try:
+                default_id = str(getattr(default_provider.meta(), "id", "") or "")
+            except Exception:  # noqa: BLE001
+                default_id = ""
+
+    items: list[dict[str, Any]] = []
+    for provider in providers:
+        try:
+            meta = provider.meta()
+        except Exception:  # noqa: BLE001
+            continue
+        provider_id = str(getattr(meta, "id", "") or "")
+        if not provider_id:
+            continue
+        model = str(getattr(meta, "model", "") or "")
+        items.append(
+            {
+                "id": provider_id,
+                "model": model,
+                "label": f"{provider_id} · {model}" if model else provider_id,
+                "is_default": bool(default_id and provider_id == default_id),
+            }
+        )
+    items.sort(key=lambda item: (not item["is_default"], item["label"]))
+    return ok({"items": items, "default_id": default_id})
+
+
 # --------------------------------------------------------------------------- #
 # 注册
 # --------------------------------------------------------------------------- #
@@ -587,6 +641,7 @@ _ROUTES: list[tuple[str, Callable[..., Awaitable[dict]], list[str]]] = [
     ("/proactive/toggle", h_proactive_toggle, ["POST"]),
     ("/proactive/now", h_proactive_now, ["POST"]),
     ("/logs", h_logs, ["GET"]),
+    ("/providers", h_providers, ["GET"]),
     ("/config", h_config, ["GET"]),
     ("/config/save", h_config_save, ["POST"]),
 ]
