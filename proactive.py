@@ -421,7 +421,11 @@ class ProactiveService:
             persona_id, settings, state, info
         )
         # 表情包是独立通道（独立概率/独立计数）；生图命中时让位，同一条消息只附一张图。
+        # 注意：sticker_hit/sticker_note 必须先初始化——生图命中的让位分支不赋值，
+        # 下面的 media_failed 判定两个分支都会读它们。
         sticker_path = sticker_url = ""
+        sticker_hit = False
+        sticker_note = ""
         if image_plan is None:
             (
                 sticker_path,
