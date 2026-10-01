@@ -128,6 +128,21 @@ function reset() {
   draft.value = { ...initial.value };
   message.info("已还原为保存前的值。");
 }
+
+/** 悬浮分组导航 */
+const activeGroup = ref("");
+
+function tintOf(index: number): string {
+  // 每个分组一个色相的淡渐变（叠在卡片原底色上，明暗主题都协调）
+  const hue = (index * 55 + 208) % 360;
+  return `hsla(${hue}, 65%, 55%, 0.10)`;
+}
+
+function jumpTo(group: ConfigGroup) {
+  activeGroup.value = group.name;
+  const el = document.getElementById(`cfg-${group.name}`);
+  el?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
 </script>
 
 <template>
@@ -165,14 +180,30 @@ function reset() {
           还原
         </n-button>
       </div>
+
+      <!-- 悬浮分组导航：右侧竖排，点击平滑滚动到对应区块 -->
+      <nav v-if="groups.length > 1" class="float-nav">
+        <button
+          v-for="group in groups"
+          :key="group.name"
+          class="nav-item"
+          :class="{ active: activeGroup === group.name }"
+          :title="group.description"
+          @click="jumpTo(group)"
+        >
+          {{ group.description }}
+        </button>
+      </nav>
     </teleport>
 
     <n-spin :show="loading">
       <n-card
-        v-for="group in groups"
+        v-for="(group, gi) in groups"
+        :id="`cfg-${group.name}`"
         :key="group.name"
         size="small"
         class="section group-card"
+        :style="{ '--tint': tintOf(gi) }"
       >
         <template #header>
           <div class="group-head">
@@ -254,6 +285,55 @@ function reset() {
   border: 1px solid rgba(128, 128, 128, 0.25);
   backdrop-filter: blur(8px);
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18);
+}
+/* 悬浮分组导航：右侧竖排小标签，窄屏隐藏避免挡内容 */
+.float-nav {
+  position: fixed;
+  right: 18px;
+  top: 45%;
+  transform: translateY(-50%);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.nav-item {
+  max-width: 96px;
+  padding: 5px 10px;
+  border: 1px solid rgba(128, 128, 128, 0.22);
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.12);
+  backdrop-filter: blur(6px);
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: all 0.2s;
+}
+.nav-item:hover {
+  opacity: 1;
+  transform: translateX(-3px);
+}
+.nav-item.active {
+  opacity: 1;
+  background: rgba(0, 122, 255, 0.18);
+  border-color: rgba(0, 122, 255, 0.45);
+  font-weight: 600;
+}
+@media (max-width: 1100px) {
+  .float-nav {
+    display: none;
+  }
+}
+/* 每个分组一层淡淡的色相渐变，帮助区分区块；底色仍跟随明暗主题 */
+.group-card.n-card {
+  background: linear-gradient(165deg, var(--tint) 0%, transparent 62%), var(--n-color);
+  scroll-margin-top: 12px;
 }
 .group-head {
   display: flex;
