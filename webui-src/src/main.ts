@@ -26,4 +26,29 @@ const router = createRouter({
   ],
 });
 
-createApp(App).use(router).mount("#app");
+// 本页跑在 AstrBot 的 iframe 里，父面板刷新会按原始 src 重建 iframe——
+// hash 路由随之丢失、落回总览。把上次页面名记在 sessionStorage（同标签
+// 页刷新后可读），加载时无显式 hash 就恢复；沙箱禁用 storage 时静默退化。
+const LAST_PAGE_KEY = "mine_chat:last_page";
+
+function readSavedPage(): string {
+  try {
+    return sessionStorage.getItem(LAST_PAGE_KEY) || "";
+  } catch {
+    return ""; // sandbox 无 storage 权限：退化为默认总览
+  }
+}
+
+async function bootstrap() {
+  const saved = readSavedPage();
+  if (saved && !window.location.hash) {
+    try {
+      await router.replace({ name: saved });
+    } catch {
+      /* 存了不存在的页面名（版本更迭）：留在总览 */
+    }
+  }
+  createApp(App).use(router).mount("#app");
+}
+
+void bootstrap();

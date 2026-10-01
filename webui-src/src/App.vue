@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
   NConfigProvider,
@@ -35,6 +35,23 @@ const activeKey = ref("overview");
 function syncTheme(ctx: { isDark?: boolean } | null) {
   if (ctx && typeof ctx.isDark === "boolean") isDark.value = ctx.isDark;
 }
+
+// 记录当前页面名到 sessionStorage：父面板刷新重建 iframe 后据此恢复页面
+// （沙箱禁用 storage 时静默退化，不影响使用）
+function rememberPage(name: unknown) {
+  if (!name) return;
+  try {
+    sessionStorage.setItem("mine_chat:last_page", String(name));
+  } catch {
+    /* storage 不可用 */
+  }
+}
+
+watch(
+  () => route.name,
+  (name) => rememberPage(name),
+  { immediate: true },
+);
 
 onMounted(() => {
   syncTheme(getContext());
