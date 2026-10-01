@@ -124,6 +124,18 @@ export interface PlanItem {
   confidence: number | null;
 }
 
+/** 「此刻」的结构化描述：当前条目 + 之后最多两条。 */
+export interface NowSlot {
+  time_text: string;
+  activity: string;
+  mood: string;
+}
+
+export interface NowInfo {
+  current: NowSlot | null;
+  upcoming: NowSlot[];
+}
+
 export interface PlanPayload {
   persona_id: string;
   persona_name?: string;
@@ -135,6 +147,7 @@ export interface PlanPayload {
   items: PlanItem[];
   current_text?: string;
   now_minute?: number;
+  now?: NowInfo;
 }
 
 export interface LogRow {

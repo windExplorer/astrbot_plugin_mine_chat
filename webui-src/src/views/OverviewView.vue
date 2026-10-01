@@ -114,7 +114,24 @@ const logColumns = [
             </template>
             <n-empty v-if="!hasPlan" description="今天还没有日程" size="small" />
             <template v-else>
-              <div class="now-line">{{ plan.current_text || "（没有安排）" }}</div>
+              <div v-if="plan.now?.current" class="now-line">
+                <n-tag size="small" type="success" :bordered="false">现在</n-tag>
+                <n-tag size="small" :bordered="false">{{ plan.now.current.time_text }}</n-tag>
+                <span class="now-activity">{{ plan.now.current.activity }}</span>
+                <n-tag v-if="plan.now.current.mood" size="tiny" type="info" :bordered="false">
+                  {{ plan.now.current.mood }}
+                </n-tag>
+              </div>
+              <div v-for="u in plan.now?.upcoming || []" :key="u.time_text" class="now-line next-line">
+                <n-tag size="small" type="warning" :bordered="false">之后</n-tag>
+                <n-tag size="small" :bordered="false">{{ u.time_text }}</n-tag>
+                <span class="now-activity">{{ u.activity }}</span>
+                <n-tag v-if="u.mood" size="tiny" type="info" :bordered="false">{{ u.mood }}</n-tag>
+              </div>
+              <div v-if="!plan.now?.current" class="now-line">
+                <n-tag size="small" :bordered="false">此刻</n-tag>
+                <span class="now-activity">（现在没有安排）</span>
+              </div>
               <n-descriptions :column="1" label-placement="left" size="small">
                 <n-descriptions-item label="日期">{{ plan.plan_date }}</n-descriptions-item>
                 <n-descriptions-item label="角色">
@@ -178,9 +195,21 @@ const logColumns = [
 
 <style scoped>
 .now-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-bottom: 10px;
-  font-size: 15px;
-  font-weight: 500;
+  font-size: 14px;
   line-height: 1.6;
+}
+.now-activity {
+  flex: 1;
+  min-width: 0;
+}
+.next-line {
+  opacity: 0.65;
+  font-size: 13px;
+  margin-bottom: 6px;
 }
 </style>

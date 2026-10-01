@@ -197,6 +197,35 @@ def build_injection_block(
     return block
 
 
+def describe_structured(items: list[dict[str, Any]], now_minutes: int) -> dict[str, Any]:
+    """控制台用的结构化现状：当前条目 + 之后两条，供前端 tag 化渲染。"""
+
+    def pack(item: dict[str, Any] | None) -> dict[str, str] | None:
+        if not item:
+            return None
+        return {
+            "time_text": f"{fmt_hhmm(int(item['start_min']))}-{fmt_hhmm(int(item['end_min']))}",
+            "activity": str(item.get("activity") or ""),
+            "mood": str(item.get("mood") or ""),
+        }
+
+    slots = locate(items, now_minutes)
+    current = pack(slots["current"])
+    upcoming: list[dict[str, str]] = []
+    for item in sorted(
+        (it for it in items if int(it["end_min"]) > now_minutes),
+        key=lambda it: int(it["start_min"]),
+    ):
+        if current and int(item["start_min"]) < now_minutes:
+            continue  # 当前条目自身
+        packed = pack(item)
+        if packed:
+            upcoming.append(packed)
+        if len(upcoming) >= 2:
+            break
+    return {"current": current, "upcoming": upcoming}
+
+
 def describe(items: list[dict[str, Any]], now_minutes: int) -> str:
     """给控制台/指令用的一句话现状描述。"""
     slots = locate(items, now_minutes)

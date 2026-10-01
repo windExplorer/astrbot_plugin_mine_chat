@@ -132,8 +132,25 @@ const currentIndex = computed(() =>
       </n-space>
     </n-card>
 
-    <n-alert v-if="data?.current_text" type="info" :bordered="false" class="section">
-      此刻：{{ data.current_text }}
+    <n-alert v-if="data?.now" type="info" :bordered="false" class="section">
+      <div v-if="data.now.current" class="now-line">
+        <n-tag size="small" type="success" :bordered="false">现在</n-tag>
+        <n-tag size="small" :bordered="false">{{ data.now.current.time_text }}</n-tag>
+        <span class="now-activity">{{ data.now.current.activity }}</span>
+        <n-tag v-if="data.now.current.mood" size="tiny" type="info" :bordered="false">
+          {{ data.now.current.mood }}
+        </n-tag>
+      </div>
+      <div v-else class="now-line">
+        <n-tag size="small" :bordered="false">此刻</n-tag>
+        <span class="now-activity">（现在没有安排）</span>
+      </div>
+      <div v-for="u in data.now.upcoming || []" :key="u.time_text" class="now-line next-line">
+        <n-tag size="small" type="warning" :bordered="false">之后</n-tag>
+        <n-tag size="small" :bordered="false">{{ u.time_text }}</n-tag>
+        <span class="now-activity">{{ u.activity }}</span>
+        <n-tag v-if="u.mood" size="tiny" type="info" :bordered="false">{{ u.mood }}</n-tag>
+      </div>
     </n-alert>
 
     <n-spin :show="loading">
@@ -191,6 +208,22 @@ const currentIndex = computed(() =>
 </template>
 
 <style scoped>
+.now-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.now-activity {
+  flex: 1;
+  min-width: 0;
+}
+.next-line {
+  opacity: 0.65;
+  font-size: 13px;
+}
 .field-label {
   margin-bottom: 6px;
   font-size: 13px;

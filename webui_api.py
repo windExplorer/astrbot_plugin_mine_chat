@@ -133,6 +133,7 @@ async def _plan_payload(plugin: Any, persona_id: str, plan_date: str) -> dict[st
     items = list(plan.get("items", [])) if plan else []
     data["current_text"] = view_mod.describe(items, view_mod.now_minutes_for(plan_date))
     data["now_minute"] = view_mod.now_minutes_for(plan_date)
+    data["now"] = view_mod.describe_structured(items, view_mod.now_minutes_for(plan_date))
     return data
 
 
