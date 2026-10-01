@@ -667,6 +667,19 @@ def test_image_backends(c: Checker) -> None:
     )
     c.check("出图指令带真实时刻", timed_prompt is not None and "04:46" in (timed_prompt or ""))
     c.check("出图指令强制环境光线一致", "光线" in (timed_prompt or "") and "绝不能" in (timed_prompt or ""))
+    # 跨模块签名一致性（v1.0.26 曾漏改 proactive_gen 侧签名导致运行期 TypeError）
+    import inspect as _inspect
+    from pathlib import Path as _Path
+
+    _pg_src = _Path(ROOT, "proactive_gen.py").read_text(encoding="utf-8")
+    c.check(
+        "proactive_gen.compose_image_prompt 支持 image_kind/anchor_hint/now_text",
+        all(k in _pg_src for k in ("image_kind", "anchor_hint", "now_text")),
+    )
+    c.check(
+        "proactive.py 调用 compose_image_prompt 传 anchor_hint",
+        "anchor_hint=await" in _Path(ROOT, "proactive.py").read_text(encoding="utf-8"),
+    )
     kind_prompt = compose(
         activity="在厨房做饭", seed="", mood="", art_style="anime", style="danbooru", language="zh",
         image_kind="眼前的食物或饮品（画面无人物）",

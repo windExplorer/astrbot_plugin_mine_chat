@@ -1,5 +1,21 @@
 # 更新日志
 
+## v1.0.29（hotfix：v1.0.26 漏改 compose_image_prompt 签名，真正的 TypeError 根因）
+
+**致歉与更正**：v1.0.28 我把它误诊为「热重载半新半旧」，重启即可恢复——**错了**。
+重启后依然报错才暴露真相：这是 v1.0.26 我自己写出的 bug——
+
+- 给**调用方**（`proactive.py`）和提示词函数（`build_image_compose_prompt`）
+  加了 `image_kind` / `anchor_hint`；
+- 却**漏改**中间层 `proactive_gen.compose_image_prompt` 的签名。
+
+所以磁盘上的代码本来就是不一致的，怎么重启都没用。三道防线（compileall 不查
+跨模块签名、pyflakes 不查 kwargs 匹配、自检没测这个函数）恰好全部漏过。
+
+**修复**：`compose_image_prompt` 补上 `image_kind` / `anchor_hint` 参数并透传；
+自检新增签名一致性检查（proactive_gen 必须支持调用方实际传的参数）。
+v1.0.28 的「热重载失败拒绝装载」保留——那是另一类真实风险。
+
 ## v1.0.28（hotfix：热重载半新半旧导致主动消息 TypeError）
 
 **现象**：更新后主动消息全部报
