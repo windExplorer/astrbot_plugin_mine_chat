@@ -409,8 +409,9 @@ def test_images(c: Checker) -> None:
 
     hint = prompts_mod.build_image_hint("在厨房做饭")
     c.check("hint 带画面线索", "在厨房做饭" in hint)
-    # 新语义：不再要求「完全别提图」，而是要求文字与画面一致呼应、禁止矛盾情节
-    c.check("hint 要求图文呼应", "呼应" in hint and "矛盾" in hint)
+    # 语义：要求文字交代拍摄来由（为什么拍/拍的什么），并禁止矛盾情节
+    c.check("hint 要求交代来由", "为什么拍" in hint and "来由" in hint)
+    c.check("hint 禁止矛盾情节", "矛盾" in hint)
     fallback_hint = prompts_mod.build_image_hint("   ")
     c.check("空描述回退中性说法", "生活随拍" in fallback_hint)
 
@@ -642,7 +643,7 @@ def test_image_backends(c: Checker) -> None:
     c.check("danbooru 指令含标签要求", tags_prompt is not None and "Danbooru" in tags_prompt)
     hint = prompts_mod.build_image_hint("女孩在床上闭眼沉睡")
     c.check("随图提示带画面描述", "闭眼沉睡" in hint)
-    c.check("随图提示要求图文呼应", "呼应" in hint and "矛盾" in hint)
+    c.check("随图提示要求交代来由", "为什么拍" in hint and "矛盾" in hint)
     fallback_hint = prompts_mod.build_image_hint("")
     c.check("无描述回退中性描述", "生活随拍" in fallback_hint)
     c.check("danbooru 指令含动漫画风", "anime style" in (tags_prompt or ""))
