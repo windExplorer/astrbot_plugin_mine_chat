@@ -344,6 +344,12 @@ class ScheduleService:
                 logger.error("mine_chat: 生成日程失败 persona=%s: %s", persona_id, exc)
                 return await self.store.get_plan(persona_id, plan_date)
 
+    def plan_needs_regenerate(self, meta: dict[str, Any] | None) -> bool:
+        """公开版到期判定：无日程 / 兜底或重试生成已过退避期 → 需要再生成。"""
+        if not meta:
+            return True
+        return self._needs_regenerate(meta)
+
     def _needs_regenerate(self, meta: dict[str, Any]) -> bool:
         source = str(meta.get("source") or "")
         if source not in {"fallback", "llm_retry"}:

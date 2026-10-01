@@ -157,6 +157,7 @@ class MineChatPlugin(Star):
             self.settings,
             default_image_dir=os.path.join(self.data_dir, "images"),
             meme_cache_dir=os.path.join(self.data_dir, "cache", "memes"),
+            plan_ensurer=self._ensure_plan_background,
         )
 
         self._terminating = False
@@ -395,7 +396,7 @@ class MineChatPlugin(Star):
         else:
             req.system_prompt = f"{req.system_prompt or ''}\n\n{block}"
 
-    def _ensure_plan_background(self, persona_id: str, umo: str) -> None:
+    def _ensure_plan_background(self, persona_id: str, umo: str = "") -> None:
         if persona_id in self._gen_pending or self._terminating:
             return
 

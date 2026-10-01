@@ -68,6 +68,7 @@ class ProactiveService:
         settings_getter,
         default_image_dir: str = "",
         meme_cache_dir: str = "",
+        plan_ensurer: Any = None,
     ) -> None:
         self.context = context
         self.store = store
@@ -75,6 +76,9 @@ class ProactiveService:
         self.schedule = schedule
         self._settings_getter = settings_getter
         self.composer = ProactiveComposer(context, store, resolver, settings_getter)
+        # 日程到期自动生成的后台回调（main._ensure_plan_background）：
+        # 心跳顺路检查，发现缺失/需再生成时非阻塞地丢给后台任务
+        self._plan_ensurer = plan_ensurer
 
         self._task: asyncio.Task | None = None
         self._kick_event = asyncio.Event()
@@ -160,8 +164,40 @@ class ProactiveService:
             return base
         return max(5.0, min(base, float(due) - time.time()))
 
+    async def _auto_generate_plans(self, settings: Settings) -> None:
+        """日程到期自动生成：心跳顺路检查，缺失/需再生成时交给后台任务。
+
+        为什么不直接在这里 await ensure_plan：生成要走 LLM（可达一分钟），
+        阻塞心跳会拖累主动消息的准点投递。ensure_plan 自带锁、幂等与
+        失败退避，这里只负责「发现缺失 + 非阻塞地交给后台」。
+        """
+        ensurer = self._plan_ensurer
+        if ensurer is None:
+            return
+        if not settings.enabled or not settings.schedule_enabled:
+            return
+        active_persona = str(getattr(settings, "active_persona", "") or "").strip()
+        if not active_persona:
+            return
+        try:
+            plan_date = await self.schedule.resolve_active_date(active_persona)
+            meta = await self.store.get_plan_meta(active_persona, plan_date)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("mine_chat: 日程到期检查失败: %s", exc)
+            return
+        if not self.schedule.plan_needs_regenerate(meta):
+            return
+        logger.info(
+            "mine_chat: 到期日程缺失/需更新（%s），自动后台生成 persona=%s",
+            plan_date,
+            active_persona,
+        )
+        ensurer(active_persona)
+
     async def _run_cycle(self) -> None:
         settings: Settings = self._settings_getter()
+        # 日程到期自动生成：独立于主动消息开关（注入日程是单独的功能）
+        await self._auto_generate_plans(settings)
         if not settings.enabled or not settings.proactive_enabled:
             return
         # 显式配置驱动：未选人格（或人格为空）时调度器什么都不做。
