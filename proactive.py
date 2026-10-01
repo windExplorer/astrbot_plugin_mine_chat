@@ -1078,10 +1078,17 @@ class ProactiveService:
         next_at = state.get("next_at")
         if next_at is not None:
             remain = (float(next_at) - now) / 60.0
+            next_text = datetime.fromtimestamp(float(next_at)).strftime("%H:%M")
             if remain > 0:
-                add("not_due", "候选时间", True, f"下次候选约 {int(remain)} 分钟后")
+                add(
+                    "not_due",
+                    "候选时间",
+                    True,
+                    f"按日程下次候选 {next_text}（约 {int(remain)} 分钟后）"
+                    "——角色做完手头的事才来找你，与「最小间隔」无关",
+                )
             else:
-                add("not_due", "候选时间", False, "已到期，等下一轮检查")
+                add("not_due", "候选时间", False, "已到期，等下一轮心跳检查（1 分钟内）")
         else:
             add("not_due", "候选时间", True, "尚未排期")
         return gates
