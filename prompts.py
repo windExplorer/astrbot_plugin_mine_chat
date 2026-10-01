@@ -88,6 +88,8 @@ PLAN_USER_TEMPLATE = """【角色设定】
 
 【今天是】{date} {weekday}
 {calendar_hint}
+【今天的日落时刻】约 {sunset}
+（任何条目里关于天色/光线/环境的描写都必须与该条目的实际时段一致：日落之前的条目不得出现天黑、灯火陆续亮起、星空或月亮；只有日落之后的条目才可写夜幕与灯火。日落前后的条目可以写「天色渐暗」的过程。）
 
 【作息参考】大约 {sleep_end} 起床，{sleep_start} 前后入睡。{night_owl_hint}
 {routine_note}
@@ -112,6 +114,21 @@ def build_plan_system() -> str:
     return PLAN_SYSTEM
 
 
+# 北半球中纬度（约北纬 30°）月度近似日落时刻（当地时间）。
+# 只是给 LLM 的天色锚点，不是天文历——±20 分钟的误差足以拦住
+# 「下午四点天就完全黑了」这类明显矛盾。
+_MONTHLY_SUNSET = {
+    1: "17:40", 2: "18:10", 3: "18:30", 4: "18:45",
+    5: "19:00", 6: "19:20", 7: "19:20", 8: "19:00",
+    9: "18:30", 10: "18:00", 11: "17:40", 12: "17:30",
+}
+
+
+def sunset_for_month(month: int) -> str:
+    """返回某月的近似日落时刻（HH:MM）；月份越界回退 18:00。"""
+    return _MONTHLY_SUNSET.get(month, "18:00")
+
+
 def build_plan_user(
     *,
     persona: str,
@@ -120,6 +137,7 @@ def build_plan_user(
     date_text: str,
     weekday_text: str,
     calendar_hint: str,
+    sunset_text: str = "",
     sleep_start_text: str,
     sleep_end_text: str,
     night_owl_hint: str,
@@ -140,6 +158,7 @@ def build_plan_user(
             "date": date_text,
             "weekday": weekday_text,
             "calendar_hint": calendar_hint or "（无特殊节日）",
+            "sunset": sunset_text or "18:00",
             "sleep_start": sleep_start_text,
             "sleep_end": sleep_end_text,
             "night_owl_hint": night_owl_hint,

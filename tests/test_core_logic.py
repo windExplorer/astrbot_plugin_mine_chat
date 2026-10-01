@@ -661,6 +661,9 @@ def test_image_backends(c: Checker) -> None:
     )
     c.check("英文自然语言指令", "英文" in (en_prompt or ""))
     c.check("心情与碎片可选", "犯困" in (real_prompt or "") and "拿铁" not in (en_prompt or ""))
+    c.equal("10 月日落约 18:00", prompts_mod.sunset_for_month(10), "18:00")
+    c.equal("7 月日落约 19:20", prompts_mod.sunset_for_month(7), "19:20")
+    c.equal("月份越界回退 18:00", prompts_mod.sunset_for_month(13), "18:00")
     timed_prompt = compose(
         activity="在床上睡觉", seed="", mood="困", art_style="anime", style="natural", language="zh",
         now_text="2026-10-01 周四 04:46",

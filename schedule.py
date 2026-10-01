@@ -650,6 +650,7 @@ class ScheduleService:
             date_text=target.strftime("%Y年%m月%d日"),
             weekday_text=_WEEKDAY_NAMES[target.weekday()],
             calendar_hint=calendar_hint(target),
+            sunset_text=prompts.sunset_for_month(target.month),
             sleep_start_text=fmt_hhmm(
                 routine["sleep_start"] if routine else settings.schedule_sleep_start_min
             ),
