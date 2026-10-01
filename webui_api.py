@@ -628,6 +628,26 @@ def _bind(plugin, fn: Callable[[Any], Awaitable[dict]]) -> Callable[[], Awaitabl
     return handler
 
 
+async def h_ui_last_page_get(plugin) -> dict:
+    """读取控制台上次停留的页面（iframe 沙箱无法持久化，存服务端）。"""
+    page = ""
+    try:
+        page = str(await plugin.store.get_meta("console_last_page") or "")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("mine_chat: 读取上次页面失败: %s", exc)
+    return ok({"page": page})
+
+
+async def h_ui_last_page_set(plugin) -> dict:
+    body = await _payload()
+    page = str(body.get("page") or "").strip()
+    try:
+        await plugin.store.set_meta("console_last_page", page)
+    except Exception as exc:  # noqa: BLE001
+        return err(f"保存失败: {exc}")
+    return ok({"page": page})
+
+
 async def h_events(plugin) -> dict:
     """长轮询：挂住请求直到全局版本号前进或超时。
 
@@ -744,6 +764,8 @@ async def h_world_rebuild(plugin) -> dict:
 
 
 _ROUTES: list[tuple[str, Callable[..., Awaitable[dict]], list[str]]] = [
+    ("/ui/last-page", h_ui_last_page_get, ["GET"]),
+    ("/ui/last-page", h_ui_last_page_set, ["POST"]),
     ("/events", h_events, ["GET"]),
     ("/world", h_world, ["GET"]),
     ("/world/save", h_world_save, ["POST"]),

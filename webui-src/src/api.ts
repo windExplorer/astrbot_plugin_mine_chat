@@ -350,6 +350,16 @@ export function apiConfig() {
   return apiGet<ConfigPayload>("/config");
 }
 
+// ---------------------------------------------------------------- 页面记忆
+/** 上次停留的控制台页面（存服务端——iframe 沙箱里 storage 不可用）。 */
+export function apiGetLastPage() {
+  return apiGet<{ page: string }>("/ui/last-page");
+}
+
+export function apiSetLastPage(page: string) {
+  return apiPost<{ page: string }>("/ui/last-page", { page }, 10000);
+}
+
 // ---------------------------------------------------------------- 事件长轮询
 /** 挂住直到后端状态变化（version 前进）或超时；页面用它实现准实时刷新。 */
 export function apiEvents(since: number, timeoutMs = 40000) {

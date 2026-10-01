@@ -2,6 +2,7 @@ import { createApp } from "vue";
 import { createRouter, createWebHashHistory } from "vue-router";
 
 import App from "./App.vue";
+import { apiGetLastPage } from "./api";
 import OverviewView from "./views/OverviewView.vue";
 import PlanView from "./views/PlanView.vue";
 import WorldView from "./views/WorldView.vue";
@@ -26,26 +27,23 @@ const router = createRouter({
   ],
 });
 
-// 本页跑在 AstrBot 的 iframe 里，父面板刷新会按原始 src 重建 iframe——
-// hash 路由随之丢失、落回总览。把上次页面名记在 sessionStorage（同标签
-// 页刷新后可读），加载时无显式 hash 就恢复；沙箱禁用 storage 时静默退化。
-const LAST_PAGE_KEY = "mine_chat:last_page";
-
-function readSavedPage(): string {
-  try {
-    return sessionStorage.getItem(LAST_PAGE_KEY) || "";
-  } catch {
-    return ""; // sandbox 无 storage 权限：退化为默认总览
-  }
-}
+// 本页跑在 AstrBot 的 sandbox iframe 里（无 allow-same-origin）：
+// hash 不会反映到父面板地址栏，父面板刷新重建 iframe 后 hash 丢失，
+// localStorage/sessionStorage 也因 opaque origin 不可用。
+// 因此把上次页面名**存服务端**（meta 表），加载时先问后端恢复——
+// 这是沙箱约束下唯一跨刷新可靠的方案（参考官方 bridge 仅有 api/files/sse 能力）。
+const VALID_PAGES = new Set(["overview", "plan", "world", "proactive", "scope", "config"]);
 
 async function bootstrap() {
-  const saved = readSavedPage();
-  if (saved && !window.location.hash) {
+  if (!window.location.hash) {
     try {
-      await router.replace({ name: saved });
+      const res = await apiGetLastPage();
+      const page = String(res?.page || "");
+      if (page && VALID_PAGES.has(page)) {
+        await router.replace({ name: page });
+      }
     } catch {
-      /* 存了不存在的页面名（版本更迭）：留在总览 */
+      /* 独立打开（无 bridge）或后端不可用：默认总览 */
     }
   }
   createApp(App).use(router).mount("#app");

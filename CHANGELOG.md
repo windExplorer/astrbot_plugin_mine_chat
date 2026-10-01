@@ -1,5 +1,23 @@
 # 更新日志
 
+## v1.0.35（页面路由记忆改走服务端，刷新真正不丢）
+
+v1.0.33 的 sessionStorage 方案**无效**：插件页跑在 `sandbox` iframe（无
+`allow-same-origin`）里，opaque origin 下 sessionStorage 访问直接抛
+SecurityError，且每次 iframe 重载都是全新 origin——被 try/catch 静默吞掉，
+等于什么都没做。
+
+**方案（查证官方 bridge 能力后确定）**：官方 bridge 只有
+api/files/sse 三类能力，没有 storage 也没有跨 frame 导航；父面板地址栏
+属于 AstrBot 自己的路由，插件无权改写（宿主安全边界，所有插件一致）。
+因此把「上次停留页面」**存到插件服务端**（meta 表）：
+
+- 切页时 `POST /ui/last-page` 上报；
+- iframe 重建时 `GET /ui/last-page` 读回并恢复页面（合法页面名校验）；
+- 独立打开页面（无 bridge）时静默跳过，不影响。
+
+跨刷新、跨浏览器会话都可靠。单管理员面板假设下全局一份。
+
 ## v1.0.34（日程断档根治：必须连续覆盖全天 00:00-24:00）
 
 **现象**：日程出现断档——例如 0:00-12:00 之间完全没有条目。

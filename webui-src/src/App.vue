@@ -15,6 +15,7 @@ import {
 import type { MenuOption } from "naive-ui";
 
 import { onContext, getContext } from "./bridge";
+import { apiSetLastPage } from "./api";
 import { PLUGIN_VERSION } from "./version";
 
 const route = useRoute();
@@ -36,20 +37,13 @@ function syncTheme(ctx: { isDark?: boolean } | null) {
   if (ctx && typeof ctx.isDark === "boolean") isDark.value = ctx.isDark;
 }
 
-// 记录当前页面名到 sessionStorage：父面板刷新重建 iframe 后据此恢复页面
-// （沙箱禁用 storage 时静默退化，不影响使用）
-function rememberPage(name: unknown) {
-  if (!name) return;
-  try {
-    sessionStorage.setItem("mine_chat:last_page", String(name));
-  } catch {
-    /* storage 不可用 */
-  }
-}
-
+// 切页时把页面名存到服务端（沙箱 iframe 的 storage 不可用）：
+// 父面板刷新重建 iframe 后，main.ts 会从后端读回并恢复页面
 watch(
   () => route.name,
-  (name) => rememberPage(name),
+  (name) => {
+    if (name) void apiSetLastPage(String(name)).catch(() => {});
+  },
   { immediate: true },
 );
 
