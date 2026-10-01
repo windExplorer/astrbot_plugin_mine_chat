@@ -175,6 +175,8 @@ export interface ProactiveStatus {
   last_message: string;
   last_user_at: number | null;
   quiet_hours: string;
+  /** 各闸门实时状态（拦截中的第一项 = 现在没发的原因）。 */
+  gates?: { key: string; name: string; blocked: boolean; detail: string }[];
 }
 
 export interface BindingRow {

@@ -55,6 +55,12 @@ onMounted(load);
 useEvents(load);
 
 const plan = computed(() => data.value?.plan || ({} as any));
+
+/** 第一个被拦截的闸门 = 现在没发的原因 */
+const blockedGate = computed(() => {
+  const gates = proactive.value?.gates || [];
+  return gates.find((g: any) => g.blocked) || null;
+});
 const proactive = computed(() => data.value?.proactive || ({} as any));
 const hasPlan = computed(() => Array.isArray(plan.value?.items) && plan.value.items.length > 0);
 
@@ -171,6 +177,25 @@ const logColumns = [
               </n-descriptions-item>
               <n-descriptions-item label="免打扰">{{ proactive.quiet_hours || "—" }}</n-descriptions-item>
             </n-descriptions>
+            <template v-if="proactive.gates?.length">
+              <n-alert
+                v-if="blockedGate"
+                type="warning"
+                :bordered="false"
+                style="margin-top: 8px"
+              >
+                现在没发的原因：{{ blockedGate.name }}{{ blockedGate.detail ? "（" + blockedGate.detail + "）" : "" }}
+              </n-alert>
+              <div class="gate-list">
+                <div v-for="gate in proactive.gates" :key="gate.key" class="gate-row">
+                  <n-tag size="small" :type="gate.blocked ? 'error' : 'success'" :bordered="false">
+                    {{ gate.blocked ? "拦截" : "通过" }}
+                  </n-tag>
+                  <span class="gate-name">{{ gate.name }}</span>
+                  <span v-if="gate.detail" class="gate-detail">{{ gate.detail }}</span>
+                </div>
+              </div>
+            </template>
           </n-card>
         </n-gi>
       </n-grid>
@@ -211,5 +236,23 @@ const logColumns = [
   opacity: 0.65;
   font-size: 13px;
   margin-bottom: 6px;
+}
+.gate-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.gate-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.gate-name {
+  font-weight: 500;
+}
+.gate-detail {
+  opacity: 0.6;
 }
 </style>

@@ -943,6 +943,7 @@ class ProactiveService:
         next_text = "-"
         if next_at:
             next_text = datetime.fromtimestamp(float(next_at)).strftime("%m-%d %H:%M")
+        gates = await self._diagnose_gates(persona_id, state, settings, now_dt, sent_today)
         return {
             "persona_id": persona_id,
             "enabled": self._runtime_enabled(state),
@@ -966,7 +967,124 @@ class ProactiveService:
             f"{settings.proactive_quiet_start_min % 60:02d}-"
             f"{settings.proactive_quiet_end_min // 60:02d}:"
             f"{settings.proactive_quiet_end_min % 60:02d}",
+            "gates": gates,
         }
+
+    async def _diagnose_gates(
+        self,
+        persona_id: str,
+        state: dict[str, Any],
+        settings: Settings,
+        now_dt: datetime,
+        sent_today: int,
+    ) -> list[dict[str, Any]]:
+        """各闸门的**实时状态**（非历史日志）：控制台一眼看出现在为什么没发。
+
+        与 _check_gates 的「找到第一个拦截就返回」不同，这里把所有闸门逐个
+        判定，前端渲染成 通过/拦截 列表；第一个拦截项就是当前原因。
+        """
+        now = time.time()
+        now_minute = now_dt.hour * 60 + now_dt.minute
+        gates: list[dict[str, Any]] = []
+
+        def add(key: str, name: str, blocked: bool, detail: str = "") -> None:
+            gates.append(
+                {"key": key, "name": name, "blocked": bool(blocked), "detail": detail}
+            )
+
+        enabled = settings.enabled and settings.proactive_enabled
+        add("disabled", "插件 / 主动开关", not enabled, "当前处于关闭状态" if not enabled else "")
+
+        if settings.quiet_now(now_minute):
+            delta = (settings.proactive_quiet_end_min - now_minute) % (24 * 60)
+            add(
+                "quiet_hours",
+                "免打扰时段",
+                True,
+                f"约 {delta} 分钟后解除（到 "
+                f"{settings.proactive_quiet_end_min // 60:02d}:{settings.proactive_quiet_end_min % 60:02d}）",
+            )
+        else:
+            add("quiet_hours", "免打扰时段", False)
+
+        umo = str(state.get("primary_umo") or "").strip()
+        add("no_umo", "投递窗口", not umo, "未绑定主窗口" if not umo else "")
+
+        current = None
+        try:
+            plan_date = await self.schedule.resolve_active_date(persona_id)
+            plan = await self.store.get_plan(persona_id, plan_date)
+            items = list(plan.get("items", [])) if plan else []
+            slots = locate(items, now_minutes_for(plan_date, now_dt))
+            current = slots.get("current")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("mine_chat: 诊断读取日程失败: %s", exc)
+        sleeping = settings.proactive_skip_sleeping and is_sleeping(current)
+        add(
+            "sleeping",
+            "角色睡觉",
+            sleeping,
+            f"日程此刻：{str(current.get('activity') or '')[:24]}" if sleeping else "",
+        )
+
+        limit = settings.proactive_daily_limit
+        add(
+            "daily_limit",
+            "每日上限",
+            bool(limit > 0 and sent_today >= limit),
+            f"已发 {sent_today}/{limit}" if limit > 0 else "不限制",
+        )
+
+        last_sent = state.get("last_sent_at")
+        if last_sent:
+            elapsed = (now - float(last_sent)) / 60.0
+            if elapsed < settings.proactive_min_interval_minutes:
+                add(
+                    "min_interval",
+                    "最小间隔",
+                    True,
+                    f"还需 {max(1, int(settings.proactive_min_interval_minutes - elapsed))} 分钟",
+                )
+            else:
+                add("min_interval", "最小间隔", False)
+        else:
+            add("min_interval", "最小间隔", False)
+
+        unanswered = int(state.get("unanswered") or 0)
+        max_un = settings.proactive_max_unanswered
+        add(
+            "unanswered_limit",
+            "连续未回复",
+            bool(max_un > 0 and unanswered >= max_un),
+            f"{unanswered}/{max_un}" if max_un > 0 else "不限制",
+        )
+
+        last_user = state.get("last_user_at")
+        if last_user:
+            elapsed_user = (now - float(last_user)) / 60.0
+            cooldown = settings.proactive_user_active_cooldown_minutes
+            if elapsed_user < cooldown:
+                add(
+                    "user_active",
+                    "用户刚说话",
+                    True,
+                    f"冷却还剩 {max(1, int(cooldown - elapsed_user))} 分钟",
+                )
+            else:
+                add("user_active", "用户刚说话", False)
+        else:
+            add("user_active", "用户刚说话", False)
+
+        next_at = state.get("next_at")
+        if next_at is not None:
+            remain = (float(next_at) - now) / 60.0
+            if remain > 0:
+                add("not_due", "候选时间", True, f"下次候选约 {int(remain)} 分钟后")
+            else:
+                add("not_due", "候选时间", False, "已到期，等下一轮检查")
+        else:
+            add("not_due", "候选时间", True, "尚未排期")
+        return gates
 
     @staticmethod
     def today_text() -> str:
