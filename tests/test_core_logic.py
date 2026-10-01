@@ -173,6 +173,7 @@ def load_schedule():
         "MIN_ITEM_MINUTES",
         "MAX_ITEM_MINUTES",
         "MIN_COVERAGE_MINUTES",
+        "_GAP_TOLERANCE_MINUTES",
         "_FIXED_HOLIDAYS",
         "_STRICT_TIME_RE",
         "_to_minutes",
@@ -664,6 +665,43 @@ def test_image_backends(c: Checker) -> None:
     c.equal("10 月日落约 18:00", prompts_mod.sunset_for_month(10), "18:00")
     c.equal("7 月日落约 19:20", prompts_mod.sunset_for_month(7), "19:20")
     c.equal("月份越界回退 18:00", prompts_mod.sunset_for_month(13), "18:00")
+
+    # 覆盖校验 v2：断档必须触发 time issue（0-12 点断档的回归测试）
+    ns_v = load_defs(
+        "schedule.py",
+        {
+            "normalize_items",
+            "validate_items",
+            "_to_minutes",
+            "_STRICT_TIME_RE",
+            "_GAP_TOLERANCE_MINUTES",
+            "MIN_ITEM_MINUTES",
+            "MAX_ITEM_MINUTES",
+            "MIN_COVERAGE_MINUTES",
+        },
+        {"parse_hhmm": config_mod.parse_hhmm, "Settings": config_mod.Settings, "date_cls": date, "re": re},
+    )
+    norm = ns_v["normalize_items"]
+    val = ns_v["validate_items"]
+    settings_default = config_mod.Settings.from_config({})
+
+    def _mk(time_s, end_s, seed="x"):
+        return norm([{"time": time_s, "end": end_s, "activity": f"活动{time_s}", "message_seed": seed}])
+
+    afternoon_only = _mk("12:00", "14:00") + _mk("14:00", "23:00")
+    issues_gap, _ = val(afternoon_only, settings_default)
+    c.check("12 点起的日程判为断档（time issue）", "time" in issues_gap)
+    full_day = (
+        _mk("23:30", "07:10", "")
+        + _mk("07:10", "12:00")
+        + _mk("12:00", "18:00")
+        + _mk("18:00", "23:30")
+    )
+    issues_full, _ = val(full_day, settings_default)
+    c.check("跨午夜睡眠条目连续覆盖全天通过", "time" not in issues_full)
+    small_gap = _mk("00:00", "08:00") + _mk("08:30", "14:00") + _mk("14:00", "23:59")
+    issues_small, _ = val(small_gap, settings_default)
+    c.check("30 分钟小空隙不算断档", "time" not in issues_small)
     timed_prompt = compose(
         activity="在床上睡觉", seed="", mood="困", art_style="anime", style="natural", language="zh",
         now_text="2026-10-01 周四 04:46",

@@ -28,6 +28,8 @@ MIN_COVERAGE_MINUTES = 18 * 60
 RETRY_BACKOFF_SECONDS = 15 * 60
 
 # 只覆盖公历固定节日；农历节日（春节/端午/中秋等）无法用固定日期推断，故不处理。
+# 覆盖校验允许的小空隙（分钟）：起床洗漱到早餐之类，再大就是断档。
+_GAP_TOLERANCE_MINUTES = 45
 _FIXED_HOLIDAYS: dict[tuple[int, int], str] = {
     (1, 1): "元旦",
     (2, 14): "情人节",
@@ -113,9 +115,17 @@ def normalize_items(raw_items: Any, *, limit: int = 48) -> list[dict[str, Any]]:
 
 
 def validate_items(items: list[dict[str, Any]], settings: Settings) -> tuple[list[str], float]:
-    """返回 (问题标签列表, 质量分 0~100)。"""
+    """返回 (问题标签列表, 质量分 0~100)。
+
+    覆盖检查（v1.0.30 重写）：把条目展开到 0-1440 时间轴（跨午夜条目的
+    越界部分折回凌晨），要求**连续覆盖全天**——这是「0-12 点断档」问题的
+    根治：断档现在直接记 time issue 触发重试，而不是只扣几分。
+    """
     if not items:
         return ["quality"], 0.0
+
+    # 防御性排序：normalize 已按 start_min 排序，但 validate 不应依赖调用方
+    items = sorted(items, key=lambda item: item["start_min"])
 
     issues: list[str] = []
     if len(items) < settings.schedule_item_min:
@@ -129,12 +139,41 @@ def validate_items(items: list[dict[str, Any]], settings: Settings) -> tuple[lis
     if overlap:
         issues.append("time")
 
-    coverage = items[-1]["end_min"] - items[0]["start_min"]
-    if coverage < MIN_COVERAGE_MINUTES:
+    # 展开到 0-1440：跨午夜条目（如 23:30-07:10）的越界部分折回凌晨段
+    intervals: list[list[int]] = []
+    for item in items:
+        start, end = int(item["start_min"]), int(item["end_min"])
+        if end > 24 * 60:
+            intervals.append([0, end - 24 * 60])
+        intervals.append([start, min(end, 24 * 60)])
+    intervals.sort()
+    merged: list[list[int]] = []
+    for start, end in intervals:
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    # 断档与端点：允许 ≤45 分钟的小空隙（起床洗漱到早餐之类），
+    # 更大的空洞或 0 点/24 点端点没接上都是 time issue
+    big_gap = False
+    gaps = 0
+    if merged:
+        if merged[0][0] > _GAP_TOLERANCE_MINUTES:
+            big_gap = True
+            gaps += 1
+        if merged[-1][1] < 24 * 60 - _GAP_TOLERANCE_MINUTES:
+            big_gap = True
+            gaps += 1
+    for previous, current in zip(merged, merged[1:]):
+        if current[0] - previous[1] > _GAP_TOLERANCE_MINUTES:
+            big_gap = True
+            gaps += 1
+    if big_gap:
         issues.append("time")
-    if items[0]["start_min"] > 15 * 60:
-        issues.append("time")
-    if items[-1]["end_min"] < 20 * 60:
+
+    total = sum(end - start for start, end in merged)
+    if total < MIN_COVERAGE_MINUTES:
         issues.append("time")
 
     score = 100.0
@@ -142,10 +181,6 @@ def validate_items(items: list[dict[str, Any]], settings: Settings) -> tuple[lis
         score -= 25.0
     if "time" in issues:
         score -= 30.0
-    gaps = 0
-    for previous, current in zip(items, items[1:]):
-        if current["start_min"] - previous["end_min"] > 90:
-            gaps += 1
     score -= min(20.0, gaps * 5.0)
     if not any(item["message_seed"] for item in items):
         score -= 10.0
