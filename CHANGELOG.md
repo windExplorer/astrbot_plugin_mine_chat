@@ -1,5 +1,19 @@
 # 更新日志
 
+## v1.0.28（hotfix：热重载半新半旧导致主动消息 TypeError）
+
+**现象**：更新后主动消息全部报
+`TypeError: compose_image_prompt() got an unexpected keyword argument 'image_kind'`
+——调用方（proactive）是新代码、被调用方（proactive_gen）是旧签名。
+
+**根因**：AstrBot 热更新只重载 main.py，插件靠 `__init__` 里的
+`_reload_dependencies()` 强制重载子模块；但之前单个模块 reload 失败只打
+warning 就继续，留下「半新半旧」的模块组合运行，运行期才爆出诡异错误。
+
+**修复**：任何依赖模块重载失败 → 插件**装载失败**并明确报错
+「依赖模块热重载失败……请完全重启 AstrBot」，绝不带病运行。
+（完全重启 AstrBot 即可恢复，文件本身是好的。）
+
 ## v1.0.27（角色锚点搬进世界观设定页）
 
 v1.0.26 把锚点放在了 AstrBot 插件配置页的「主动消息」分组深处，不好找。

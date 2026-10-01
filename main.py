@@ -66,7 +66,16 @@ PLUGIN_VERSION = _read_version()
 
 
 def _reload_dependencies() -> None:
+    """热更新时强制重载依赖子模块（watchfiles 只重载 main.py）。
+
+    任何模块重载失败都必须抛错让插件装载失败——**绝不能带病继续**：
+    半新半旧的模块组合会在运行期爆出诡异错误（实测：
+    「TypeError: compose_image_prompt() got an unexpected keyword argument」
+    ——proactive 是新代码、proactive_gen 是旧代码），那种错排查成本极高。
+    装载失败 + 日志明确提示重启，是诚实且可自愈的行为（完全重启即恢复）。
+    """
     package = __package__ or PLUGIN_NAME
+    failures: list[str] = []
     for name in _RELOAD_MODULES:
         full = f"{package}.{name}"
         module = sys.modules.get(full)
@@ -74,8 +83,14 @@ def _reload_dependencies() -> None:
             continue
         try:
             importlib.reload(module)
-        except Exception as exc:  # noqa: BLE001 - 重载失败不应阻止插件装载
-            logger.warning("mine_chat: 热重载模块 %s 失败: %s", full, exc)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"{full}: {type(exc).__name__}: {exc}")
+            logger.error("mine_chat: 热重载模块 %s 失败: %s", full, exc)
+    if failures:
+        raise RuntimeError(
+            "依赖模块热重载失败，插件拒绝在半新半旧状态下运行"
+            "——请完全重启 AstrBot 后重试。失败详情: " + "；".join(failures)
+        )
 
 
 def _resolve_data_dir() -> tuple[str, bool]:
