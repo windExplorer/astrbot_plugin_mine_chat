@@ -72,18 +72,22 @@ def image_desc_from_path(path: str) -> str:
 # --------------------------------------------------------------------------- #
 # 联动 ComfyUI萌绘（anima）出图
 # --------------------------------------------------------------------------- #
-# anima 的 companion 魔法标识（main.py SOURCE_COMPANION_PLUGIN）：命中后工具
-# 返回 JSON（image_paths=服务器本地路径）且不发图，由调用方自己发。
-ANIMA_SOURCE_TAG = "我会永远陪着你"
+# 调用萌绘 comfyui_draw 时的「来源」标识：只用于萌绘侧日志（来源=…）与图库审计，
+# 让「这张图谁画的」能一眼分辨。
+# ⚠️ 取图靠的是显式参数 external=True（萌绘 v7.7.58+ 新增），**不是**这串标识：
+# 历史写法（≤ v1.0.39）借用了伴侣插件的口令串（萌绘常量 SOURCE_COMPANION_PLUGIN），
+# 命中才返回 JSON（image_paths=服务器本地路径）且不发图——那会让本插件在萌绘侧
+# 被记成伴侣插件，排查来源时张冠李戴。现在 source 只表达「我是谁」。
+ANIMA_SOURCE_TAG = "萌萌日程"
 ANIMA_DRAW_TIMEOUT = 180.0
 
 
 def parse_anima_result(result: Any) -> str | None:
     """解析 comfyui_draw 的返回，取第一张本地图路径；失败返回 None。
 
-    companion source 约定：成功 → {"status": "ok", "image_paths": [本地路径...]}；
-    失败 / NSFW 拦截等一律是纯文本（没有 JSON error 字段），所以解析不出
-    JSON 或 status 非 ok 都按失败处理。
+    外部调用（external=True，或萌绘历史 companion 约定值）时成功 →
+    {"status": "ok", "image_paths": [本地路径...]}；失败 / NSFW 拦截等一律是
+    纯文本（没有 JSON error 字段），所以解析不出 JSON 或 status 非 ok 都按失败处理。
     """
     payload: Any = result
     if isinstance(result, str):
@@ -105,10 +109,11 @@ def make_stub_event(umo: str) -> Any:
     """为 anima 伴侣出图构造轻量事件（AstrMessageEvent 子类，绝不发送）。
 
     动机：机器人主动配图是「角色想给用户看自己的生活」，不该要求用户先发过
-    一条消息。anima 的 comfyui_draw 在 source=伴侣标记时跳过白名单/闸门/
-    已读回执/主动发图，对 event 的实际依赖只有 session_id（记录 key）与
-    message_str（尺寸比例识别，空则回落提示词）——所以用主窗口 umo 伪造
-    一个极简事件即可。构造失败返回 None，调用方维持原有跳过逻辑。
+    一条消息。anima 的 comfyui_draw 在外部调用（external=True 或历史伴侣标记）
+    时跳过白名单/闸门/已读回执/主动发图并且自己不发图，对 event 的实际依赖
+    只有 session_id（记录 key）与 message_str（尺寸比例识别，空则回落提示词）
+    ——所以用主窗口 umo 伪造一个极简事件即可。构造失败返回 None，调用方维持
+    原有跳过逻辑。
     """
     try:
         from types import SimpleNamespace
@@ -267,6 +272,7 @@ async def fetch_anima_image(
 
     prompt 通常是一句中文画面描述（由萌绘按工作流底模整理语种与风格）；
     raw_prompt=True 时 prompt 已是最终形态（英文标签），萌绘跳过二次整理。
+    external=True 让萌绘「返回图片路径、由我方发图」（同时默认静默）；
     event 用投递窗口最近一次真实用户消息事件（anima 侧必需）。
     """
     handler = _resolve_draw_handler(context)
@@ -276,7 +282,13 @@ async def fetch_anima_image(
     if event is None:
         logger.info("mine_chat: 没有可用的会话事件，跳过 anima 出图")
         return None
-    kwargs: dict[str, Any] = {"prompt": prompt, "source": ANIMA_SOURCE_TAG}
+    kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "source": ANIMA_SOURCE_TAG,
+        # 萌绘 v7.7.58+：显式声明「路径给我、图我发」（旧版会把它当未知 kwarg 丢弃，
+        # 于是拿不到路径 → 主动消息退化为纯文本，不报错）
+        "external": True,
+    }
     if workflow.strip():
         kwargs["workflow"] = workflow.strip()
     if raw_prompt:

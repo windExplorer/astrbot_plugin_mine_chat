@@ -599,7 +599,7 @@ def test_image_backends(c: Checker) -> None:
     c.check("宿主接口异常：不算不可用", path is None and not no_api)
 
     ok_payload = json.dumps({"status": "ok", "image_paths": ["/tmp/a.png"]})
-    c.equal("companion JSON 取路径", parse_anima_result(ok_payload), "/tmp/a.png")
+    c.equal("外部调用 JSON 取路径（兼容 companion 历史值）", parse_anima_result(ok_payload), "/tmp/a.png")
     c.equal("dict 形态同样可解析", parse_anima_result({"status": "ok", "image_paths": ["x.png"]}), "x.png")
     c.check(
         "多张取第一张",
@@ -616,6 +616,14 @@ def test_image_backends(c: Checker) -> None:
     c.equal("表情文件名清洗", meme_cache_filename("abc/123:x", "GIF"), "abc_123_x.gif")
     c.equal("非法扩展回退 png", meme_cache_filename("id1", "bmp"), "id1.png")
     c.equal("空 id 兜底", meme_cache_filename("", "png"), "sticker.png")
+
+    # 跨插件契约（萌绘 v7.7.58+）：取图靠显式 external=True，source 只作来源标识。
+    # 不许再借伴侣插件的口令串——那会让本插件在萌绘日志/图库里被记成别的插件。
+    with open(os.path.join(ROOT, "proactive_gen.py"), "r", encoding="utf-8") as handle:
+        pg_src = handle.read()
+    c.equal("来源标识 = 本插件自己的名字", ns["ANIMA_SOURCE_TAG"], "萌萌日程")
+    c.check("取图必须显式 external=True", '"external": True' in pg_src)
+    c.check("不得再传伴侣插件的口令", "我会永远陪着你" not in pg_src)
     c.equal("点开头扩展名", meme_cache_filename("id", ".gif"), "id.gif")
 
     # 绘图提示词生成（静默，含画风与语种/类型约束）
