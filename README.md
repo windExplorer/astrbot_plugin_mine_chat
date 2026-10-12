@@ -111,6 +111,11 @@ AstrBot 插件页 **萌萌日程**（`pages/schedule-console/`）：
 
 两条通道独立掷骰；同一条消息两者都命中时配图优先、表情让位。每次决策（命中/未中/超限/失败/让位）都进裁决日志，控制台「主动消息」页可查。
 
+命中却拿不到图时（萌绘出图失败 / 图库为空 / 表情拉取失败），默认**整条取消**：连文字一起不发——
+「说要发图却没有图」比什么都不说更出戏。若更看重「别白等一次主动机会」，可打开配置项
+**「配图/表情获取失败时仍发文字」**（`proactive.media_fallback_text`）：此时降级为纯文字发出，
+本条不带图，并在裁决日志里记一条 `img_fallback` / `sticker_fallback`。
+
 ## 数据
 
 - 位置：`data/plugin_data/astrbot_plugin_mine_chat/mine_chat.db`（SQLite，WAL）。

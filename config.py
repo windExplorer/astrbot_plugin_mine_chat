@@ -212,6 +212,9 @@ class Settings:
     proactive_image_negative_prompt: str = ""
     proactive_image_probability: float = 0.25
     proactive_image_max_per_day: int = 2
+    # 命中了配图/表情却拿不到图时：False = 整条取消（默认，图文一致优先）；
+    # True = 降级为纯文字继续发（至少把这次主动机会用掉）
+    proactive_media_fallback_text: bool = False
 
     # 主动消息表情包（萌萌表情包联动）——「情绪反应贴图」，与生图独立计数
     proactive_sticker_enabled: bool = False
@@ -465,6 +468,15 @@ class Settings:
                 2,
                 0,
                 50,
+            ),
+            proactive_media_fallback_text=to_bool(
+                pick(
+                    proactive,
+                    "media_fallback_text",
+                    "proactive_media_fallback_text",
+                    False,
+                ),
+                False,
             ),
             proactive_sticker_enabled=to_bool(
                 pick(proactive, "sticker_enabled", "proactive_sticker_enabled", False),

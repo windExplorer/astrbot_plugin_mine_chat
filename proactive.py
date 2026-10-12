@@ -504,19 +504,44 @@ class ProactiveService:
                 persona_id, "sticker", "sticker_yield", umo, throttle=True
             )
 
-        # 命中了媒体（角色想要发图/表情）却没拿到：整条取消，文字也不发——
-        # 「说了一段话却没带上图」比「什么都没说」更出戏。
-        media_notes: list[str] = []
-        if image_hit and not (image_plan and image_plan.get("path")):
-            media_notes.append(f"配图：{image_note or '获取失败'}")
-        if sticker_hit and not (sticker_path or sticker_url):
-            media_notes.append(f"表情：{sticker_note or '获取失败'}")
-        if media_notes:
-            await self._record(
-                persona_id, "skip", "media_failed", umo, content="；".join(media_notes)
-            )
-            await self._reschedule(persona_id)
-            return False, "media_failed"
+        # 命中了媒体（角色想要发图/表情）却没拿到：
+        # 默认整条取消，文字也不发——「说了一段话却没带上图」比「什么都没说」更出戏。
+        # 打开「配图/表情获取失败时仍发文字」（proactive.media_fallback_text）后，
+        # 降级为纯文字继续走完本次主动（本条不带图），至少把这次机会用掉。
+        # 注意：生图命中但出图失败时 image_plan 为 None，表情通道会被照常掷骰，
+        # 所以「配图失败」与「表情失败」可能同时成立，两条日志都要落。
+        image_missing = image_hit and not (image_plan and image_plan.get("path"))
+        sticker_missing = sticker_hit and not (sticker_path or sticker_url)
+        if image_missing or sticker_missing:
+            if not settings.proactive_media_fallback_text:
+                media_notes: list[str] = []
+                if image_missing:
+                    media_notes.append(f"配图：{image_note or '获取失败'}")
+                if sticker_missing:
+                    media_notes.append(f"表情：{sticker_note or '获取失败'}")
+                await self._record(
+                    persona_id, "skip", "media_failed", umo, content="；".join(media_notes)
+                )
+                await self._reschedule(persona_id)
+                return False, "media_failed"
+            if image_missing:
+                await self._record(
+                    persona_id,
+                    "img",
+                    "img_fallback",
+                    umo,
+                    content=f"配图：{image_note or '获取失败'}",
+                    throttle=True,
+                )
+            if sticker_missing:
+                await self._record(
+                    persona_id,
+                    "sticker",
+                    "sticker_fallback",
+                    umo,
+                    content=f"表情：{sticker_note or '获取失败'}",
+                    throttle=True,
+                )
 
         # 手动/force 发送撞上睡眠时段时的场景一致性：
         # 角色是「刚被手机震醒」在发消息——文字要迷糊，图也要是刚醒的样子

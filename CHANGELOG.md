@@ -1,5 +1,31 @@
 # 更新日志
 
+## v1.0.41（新增「配图/表情获取失败时仍发文字」，出图失败不再白白浪费一次主动）
+
+**需求**：主动消息命中配图后，若萌绘出图失败（或本地图库为空、表情拉取失败），整条消息会被
+取消——文字也不发。用户希望「图没拿到也把话说出来」，但这又与原设计取向冲突，于是做成可配置项。
+
+**原设计（保持不变，仍为默认）**：命中了媒体却没拿到 → 整条取消，连文字一起不发。
+理由是「说要发图却没有图」比「什么都没说」更出戏，所以宁可留到下一次。
+
+**修复/新增**：
+
+- `_conf_schema.json` 新增 `proactive.media_fallback_text`（**默认 false**，即维持原行为），
+  文案「配图/表情获取失败时仍发文字」；`config.py` 的 `Settings.proactive_media_fallback_text`
+  同步读取（嵌套键 + 平铺键兜底），老配置不受影响。
+- `proactive.py` 的 `_do_send` 媒体失败分支改为按开关二分：
+  - 关闭：原样落 `decision=skip / reason=media_failed`，整条取消并重排；
+  - 开启：**降级为纯文字**继续走完本次主动（本条不带图），分别落
+    `decision=img / reason=img_fallback` 与 `decision=sticker / reason=sticker_fallback`
+    （节流写入，避免刷屏）。注意生图命中但出图失败时 `image_plan` 为 None，表情通道会被
+    照常掷骰，因此「配图失败 + 表情失败」可能同时成立，两条日志都会落。
+- 原因码三处一致（自检 [12] 强制）：`main.py` 中文表与 `webui-src/src/api.ts` 的
+  `REASON_TEXT` 均补上 `img_fallback` / `sticker_fallback` 文案。
+
+**自检**：`test_core_logic.py` 新增 3 条 Settings 断言（默认关闭 / 嵌套键可开 / 平铺键兜底可开）
+与 4 条源码守卫（开关被读取、两个降级原因码存在、关闭分支的 `media_failed` 未被删）；
+`test_schema.py` 通过（新增节点带 `"type": "bool"`）。
+
 ## v1.0.40（萌绘取图改用「自己的标识 + external=True」，不再借伴侣插件的口令）
 
 **问题**：主动配图的萌绘联动一直传 `source="我会永远陪着你"`——那是**伴侣插件**的来源

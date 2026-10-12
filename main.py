@@ -543,6 +543,7 @@ class MineChatPlugin(Star):
             "img_no_event": "萌绘出图缺用户事件（先聊一句）",
             "img_dir_empty": "本地图库为空或不可读",
             "img_fail": "配图生成失败",
+            "img_fallback": "配图获取失败，已降级为纯文字发送（本条不带图）",
             "media_failed": "命中了配图/表情但获取失败，本次连文字一起取消",
             "exception": "处理过程出现意外异常（详情见内容列与 AstrBot 日志）",
             # 表情通道（decision=sticker）
@@ -551,6 +552,7 @@ class MineChatPlugin(Star):
             "sticker_dice": "表情掷骰未命中",
             "sticker_limit": "今日表情已达上限",
             "sticker_fail": "表情拉取失败（原因见内容列）",
+            "sticker_fallback": "表情拉取失败，已降级为纯文字发送（本条不带表情）",
             "sticker_no_api": "萌萌表情包不可用（未装/停用/版本低于 v0.2.0）",
             "sticker_yield": "表情让位给了配图（一条消息只带一张图）",
         }
