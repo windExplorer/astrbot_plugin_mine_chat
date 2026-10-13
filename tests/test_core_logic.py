@@ -1092,8 +1092,8 @@ def test_daylight(c: Checker) -> None:
 
 
 def test_continuity(c: Checker) -> None:
-    """跨次连续：时间锚文本、主动消息历史接线、图文一致摘要（v1.0.43）。"""
-    print("\n[14] 跨次连续（主动消息历史与时间锚）")
+    """跨次连续与图文一致：时间锚、主动消息历史接线、随图说明位置（v1.0.43/44）。"""
+    print("\n[14] 跨次连续与图文一致")
     import prompts as prompts_mod
 
     now = datetime(2026, 10, 13, 16, 5)
@@ -1175,6 +1175,38 @@ def test_continuity(c: Checker) -> None:
     c.check("裁决日志记下实际提示词", "final_prompt[:160]" in src_proactive)
     c.check("饮食重复单独判一次", "diet_repetition" in src_sched)
     c.check("三餐避重清单进提示词", "recent_foods" in src_sched)
+
+    # v1.0.44：图文一致收口
+    with_image = prompts_mod.build_proactive_user(
+        now_text="2026-10-13 周二 16:05",
+        current_block="16:00-18:00 把阳台的花浇了",
+        seed="",
+        recent_chat="",
+        image_hint="\n【随图说明】画面是：窗边的绿萝",
+    )
+    c.check("随图说明排在用户侧末尾", with_image.rstrip().endswith("窗边的绿萝"))
+    hint_text = prompts_mod.build_image_hint("窗边的绿萝")
+    c.check("随图说明点明照片跟在最后一条", "最后一条" in hint_text)
+    c.check("随图说明禁止写画面里没有的东西", "没有的东西" in hint_text)
+
+    no_image = prompts_mod.build_proactive_user(
+        now_text="2026-10-13 周二 16:05",
+        current_block="16:00-18:00 把阳台的花浇了",
+        seed="",
+        recent_chat="",
+    )
+    c.check("不带图时不出现随图说明", "随图说明" not in no_image)
+
+    ns_hint = load_defs("proactive_gen.py", {"is_chinese_text"})
+    is_chinese_text = ns_hint["is_chinese_text"]
+    c.check("中文提示词判为中文", is_chinese_text("下午在窗边浇花，绿萝的叶子亮亮的"))
+    c.check(
+        "英文标签判为非中文",
+        not is_chinese_text("1girl, afternoon, watering flowers, green leaves"),
+    )
+    c.check("空串判为非中文", not is_chinese_text("   "))
+    c.check("画面线索优先用中文提示词原文", "is_chinese_text(final_prompt)" in src_proactive)
+    c.check("出图文件存在性预检", "os.path.isfile(path)" in src_proactive)
 
 
 def test_injection_gate(c: Checker) -> None:

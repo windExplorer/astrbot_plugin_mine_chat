@@ -486,6 +486,20 @@ async def fetch_meme_image(token: str, cache_dir: str) -> str | None:
     return path
 
 
+def is_chinese_text(text: Any, threshold: float = 0.2) -> bool:
+    """文本是不是以中文写的（用于决定给文字生成的画面线索用原文还是中文摘要）。
+
+    v1.0.44：出图提示词是中文自然语言时，把它**原样**交给配文生成最不容易对不上
+    （那正是喂给画图的那段描述）；danbooru 模式产出的是英文标签，文字模型读英文
+    标签容易跑偏，这时才退回中文事实摘要。
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return False
+    han = sum(1 for ch in raw if "\u4e00" <= ch <= "\u9fff")
+    return han / max(1, len(raw)) >= threshold
+
+
 def split_segments(text: str, max_segments: int) -> list[str]:
     """把模型输出拆成若干条短消息（按独占一行的 --- 分隔）。"""
     raw = (text or "").strip()
@@ -688,12 +702,13 @@ class ProactiveComposer:
                 },
             )
         else:
+            # 随图说明改到用户侧末尾（v1.0.44）：夹在系统提示词里、后面还跟着
+            # 一大段人格设定，模型经常「没看见」，于是文字和图各说各的。
             system = prompts.build_proactive_system(
                 character_name=character_name,
                 max_segments=settings.proactive_max_segments,
                 unanswered=unanswered,
                 extra=settings.proactive_extra_instruction,
-                image_hint=image_hint,
             )
             if persona_prompt:
                 system = f"{system}\n\n【你的人物设定】\n{persona_prompt}"
@@ -706,6 +721,7 @@ class ProactiveComposer:
             last_proactive=last_proactive,
             recent_proactive=recent_proactive,
             daylight_fact=daylight.lighting_fact(now_dt),
+            image_hint=image_hint,
         )
         if asleep:
             # 手动强制发送撞上睡眠时段：把「被手机震醒」的场景说清楚，

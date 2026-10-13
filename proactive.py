@@ -31,6 +31,7 @@ from .proactive_gen import (
     fetch_meme_image,
     fetch_meme_image_via_plugin,
     image_desc_from_path,
+    is_chinese_text,
     list_image_files,
     make_stub_event,
 )
@@ -782,6 +783,18 @@ class ProactiveService:
             if not path:
                 await self._record(persona_id, "img", "img_fail", umo, throttle=True)
                 return None, True, "萌绘出图失败"
+            if not os.path.isfile(path):
+                # 拿到了路径但文件不在了（萌绘侧清理 / 时序问题）：宁可不带图，
+                # 也别发一条「拍给你看」却没有图的文字（v1.0.44）
+                await self._record(
+                    persona_id,
+                    "img",
+                    "img_fail",
+                    umo,
+                    content=f"出图文件不存在：{path}",
+                    throttle=True,
+                )
+                return None, True, "出图文件不存在"
             await self._record(
                 persona_id,
                 "img",
@@ -791,24 +804,27 @@ class ProactiveService:
                 # 用户在控制台能一眼看到「我们到底让萌绘画了什么」，不用翻萌绘日志
                 content=f"anima {os.path.basename(path)}｜{final_prompt[:160]}",
             )
-            # desc=交代给文字生成的画面摘要：文字必须知道图里画的是什么，
-            # 否则会出现「文字说吵醒你了、图里却在沉睡」的图文脱节。
-            # 用中文摘要而不是提示词原文——danbooru 模式产出的是英文标签，
-            # 文字生成读英文标签容易跑偏；而「时段 + 活动 + 画面类型」正是提示词
-            # 生成的事实来源，与画面说的是同一件事（v1.0.43）。
-            desc = "；".join(
-                part
-                for part in (
-                    f"此刻是{phase.name}",
-                    activity,
-                    f"画面是{image_kind}",
-                )
-                if part
-            )
+            # desc=交代给文字生成的画面线索。优先级（v1.0.44）：
+            #   ① 出图提示词是**中文**（自然语言模式）→ 原样用它：那就是喂给画图的
+            #      那段描述，文字与画面说的是同一件事；
+            #   ② 英文标签（danbooru）或别的形态 → 退回中文事实摘要
+            #      （时段 + 活动 + 画面类型），文字模型读英文标签容易跑偏。
+            if is_chinese_text(final_prompt):
+                desc = " ".join(str(final_prompt or "").split())[:160]
+            else:
+                desc = "；".join(
+                    part
+                    for part in (
+                        f"此刻是{phase.name}",
+                        activity,
+                        f"画面是{image_kind}",
+                    )
+                    if part
+                )[:160]
             return {
                 "kind": "anima",
                 "path": path,
-                "desc": desc[:120],
+                "desc": desc,
             }, True, ""
 
         # 本地图库（默认后端）
