@@ -18,7 +18,7 @@ import random
 import re
 import sys
 import tempfile
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -208,6 +208,17 @@ def load_schedule():
         "detect_repetition",
         "fallback_items",
         "calendar_hint",
+        # v1.0.43：近似重复 + 饮食多样性（纯函数）
+        "_SIMILAR_ACTIVITY",
+        "_FOOD_WORDS",
+        "_FOOD_WORDS_BY_LENGTH",
+        "_FOOD_STAPLE_EXEMPT",
+        "_normalize_activity",
+        "_bigrams",
+        "activity_similarity",
+        "extract_foods",
+        "diet_repetition",
+        "meal_lines",
     }
     return load_defs(
         "schedule.py",
@@ -218,6 +229,7 @@ def load_schedule():
             "date_cls": date,
             "re": re,
             "random": random,
+            "daylight": daylight_mod,
         },
     )
 
@@ -275,6 +287,62 @@ def test_schedule(c: Checker) -> None:
 
     c.check("避重命中", detect_repetition(full, ["上午的事", "午饭", "晚上"]))
     c.check("避重未命中", not detect_repetition(full, ["别的", "无关"]))
+
+    # v1.0.43：近似重复——「同一件事换个说法」也要算重复（原来只比字符串相等）
+    similar = normalize_items(
+        [
+            {"time": "07:00", "end": "08:00", "activity": "在厨房做简单的早饭", "message_seed": ""},
+            {"time": "12:00", "end": "13:00", "activity": "中午吃了便利店的关东煮", "message_seed": ""},
+            {"time": "14:00", "end": "18:00", "activity": "下午在窗边写字", "message_seed": ""},
+        ]
+    )
+    c.check(
+        "换句话说的同一件事也算重复",
+        detect_repetition(
+            similar,
+            ["在厨房做了简单的早饭", "中午点了便利店的关东煮", "下午坐在窗边写东西"],
+        ),
+    )
+    c.check(
+        "完全无关的活动不误判",
+        not detect_repetition(similar, ["在阳台浇花", "去超市买了鸡蛋"]),
+    )
+
+    # v1.0.43：饮食多样性（「每天吃的一样」是用户实测反馈的痛点）
+    extract_foods = ns["extract_foods"]
+    diet_repetition = ns["diet_repetition"]
+    meal_lines = ns["meal_lines"]
+    c.equal("抽食物词：拉面", extract_foods("中午吃了碗拉面"), {"拉面"})
+    c.equal("抽食物词：长词优先（面包不拆成面）", extract_foods("早上烤了面包"), {"面包"})
+    c.equal("抽食物词：多项", extract_foods("中午吃关东煮，晚上涮火锅"), {"关东煮", "火锅"})
+    c.equal("无食物返回空", extract_foods("下午在窗边写字"), set())
+    c.equal(
+        "同一道菜跨天重复被抓到",
+        diet_repetition(similar, ["中午点了便利店的关东煮", "晚上泡面"]),
+        ["关东煮"],
+    )
+    c.equal(
+        "主食每天一样不算单一",
+        diet_repetition(
+            [{"activity": "早上喝了粥配牛奶"}], ["早上也是粥和牛奶"]
+        ),
+        [],
+    )
+    c.equal(
+        "最近没吃过就不算重复",
+        diet_repetition(similar, ["在阳台浇花", "去超市买了鸡蛋"]),
+        [],
+    )
+    c.equal(
+        "餐次行只挑含食物的活动",
+        meal_lines(
+            [
+                {"plan_date": "2026-10-12", "activity": "中午吃了拉面"},
+                {"plan_date": "2026-10-12", "activity": "下午开会"},
+            ]
+        ),
+        ["2026-10-12：中午吃了拉面"],
+    )
 
     fallback = fallback_items(settings)
     c.check("兜底条目数 >= 4", len(fallback) >= 4, f"n={len(fallback)}")
@@ -375,7 +443,8 @@ def test_schedule_view(c: Checker) -> None:
     # v1.0.42：时刻要和时段一起注入（光给「16:05」，模型照样能写出「天黑了」）
     c.check(
         "注入的时刻带时段与日落边界",
-        "今天日落约" in block and ("白天" in block or "夜晚" in block),
+        "今天日落约" in block
+        and daylight_mod.phase_of(datetime.now()).name in block,
     )
     c.check("注入长度受限", len(block) <= settings.inject_max_chars + 1, f"len={len(block)}")
 
@@ -1022,6 +1091,92 @@ def test_daylight(c: Checker) -> None:
     )
 
 
+def test_continuity(c: Checker) -> None:
+    """跨次连续：时间锚文本、主动消息历史接线、图文一致摘要（v1.0.43）。"""
+    print("\n[14] 跨次连续（主动消息历史与时间锚）")
+    import prompts as prompts_mod
+
+    now = datetime(2026, 10, 13, 16, 5)
+    c.equal(
+        "今天的时间锚",
+        daylight_mod.stamp_text(datetime(2026, 10, 13, 9, 30).timestamp(), now),
+        "今天 09:30",
+    )
+    c.equal(
+        "昨天的时间锚",
+        daylight_mod.stamp_text(datetime(2026, 10, 12, 22, 10).timestamp(), now),
+        "昨天 22:10",
+    )
+    c.equal(
+        "前天的时间锚",
+        daylight_mod.stamp_text(datetime(2026, 10, 11, 8, 0).timestamp(), now),
+        "前天 08:00",
+    )
+    c.equal(
+        "更早给日期",
+        daylight_mod.stamp_text(datetime(2026, 10, 8, 20, 0).timestamp(), now),
+        "10-08 20:00",
+    )
+    c.equal("坏时间戳返回空", daylight_mod.stamp_text("bad", now), "")
+    c.equal("刚刚", daylight_mod.ago_text((now - timedelta(seconds=30)).timestamp(), now), "刚刚")
+    c.equal(
+        "25 分钟前",
+        daylight_mod.ago_text((now - timedelta(minutes=25)).timestamp(), now),
+        "25 分钟前",
+    )
+    c.equal(
+        "3 小时前",
+        daylight_mod.ago_text((now - timedelta(hours=3)).timestamp(), now),
+        "3 小时前",
+    )
+    c.equal(
+        "2 天前",
+        daylight_mod.ago_text((now - timedelta(days=2)).timestamp(), now),
+        "2 天前",
+    )
+
+    prompt = prompts_mod.build_proactive_user(
+        now_text="2026-10-13 周二 16:05",
+        current_block="16:00-18:00 把阳台的花浇了",
+        seed="",
+        recent_chat="（最后一条消息：今天 15:40，25 分钟前）\n用户：在吗",
+        recent_proactive="今天 15:20：刚把阳台的花浇了\n昨天 22:10：我准备睡了",
+    )
+    c.check("最近几条主动进提示词（带时间锚）", "今天 15:20" in prompt and "昨天 22:10" in prompt)
+    c.check("最近对话带时间锚", "25 分钟前" in prompt)
+    c.check(
+        "空历史回退「第一次主动」",
+        "第一次主动"
+        in prompts_mod.build_proactive_user(
+            now_text="2026-10-13 周二 16:05", current_block="", seed="", recent_chat=""
+        ),
+    )
+    c.check(
+        "老调用方（只给 last_proactive）仍可用",
+        "下午茶好难喝"
+        in prompts_mod.build_proactive_user(
+            now_text="t",
+            current_block="",
+            seed="",
+            recent_chat="",
+            last_proactive="下午茶好难喝",
+        ),
+    )
+
+    # 接线守卫：历史必须真的落库、生成时真的会读；desc 与日志口径也要在
+    src_proactive = open(os.path.join(ROOT, "proactive.py"), encoding="utf-8").read()
+    src_gen = open(os.path.join(ROOT, "proactive_gen.py"), encoding="utf-8").read()
+    src_store = open(os.path.join(ROOT, "store.py"), encoding="utf-8").read()
+    src_sched = open(os.path.join(ROOT, "schedule.py"), encoding="utf-8").read()
+    c.check("发送成功后记主动消息历史", "add_proactive_message" in src_proactive)
+    c.check("生成时读取主动消息历史", "recent_proactive_messages" in src_gen)
+    c.check("主动消息历史表建在 store 里", "proactive_message" in src_store)
+    c.check("出图 desc 用中文画面摘要", "此刻是{phase.name}" in src_proactive)
+    c.check("裁决日志记下实际提示词", "final_prompt[:160]" in src_proactive)
+    c.check("饮食重复单独判一次", "diet_repetition" in src_sched)
+    c.check("三餐避重清单进提示词", "recent_foods" in src_sched)
+
+
 def test_injection_gate(c: Checker) -> None:
     print("\n[11] 注入资格判定")
     ns = load_defs(
@@ -1168,6 +1323,7 @@ def main() -> int:
     test_channel_reason_codes(checker)
     test_injection_gate(checker)
     test_daylight(checker)
+    test_continuity(checker)
 
     print(f"\n共 {checker.count} 项检查，失败 {len(checker.failures)} 项")
     # 纯 ASCII 结论行：脚本要在 GBK 控制台里跑（中文 pattern 会失真），

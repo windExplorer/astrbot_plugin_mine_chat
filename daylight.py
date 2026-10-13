@@ -86,6 +86,48 @@ def sunset_for_month(month: int) -> str:
     return _MONTHLY_SUNSET.get(month, "18:00")
 
 
+def stamp_text(ts: float, now: datetime | None = None) -> str:
+    """时间戳 → 带相对日期的人话：`今天 15:20` / `昨天 22:10` / `10-11 09:30`。
+
+    为什么需要它（v1.0.43）：主动消息要「跨次连续」，模型必须知道上一次主动
+    是什么时候说的——只丢一句纯文本，它分不清那是 2 小时前还是 3 天前，
+    于是容易把隔了两天的话当成刚刚说的，或者把同一件事反复讲。
+    """
+    current = now or datetime.now()
+    try:
+        moment = datetime.fromtimestamp(float(ts))
+    except (TypeError, ValueError, OSError):
+        return ""
+    delta_days = (current.date() - moment.date()).days
+    if delta_days <= 0:
+        label = "今天"
+    elif delta_days == 1:
+        label = "昨天"
+    elif delta_days == 2:
+        label = "前天"
+    else:
+        label = moment.strftime("%m-%d")
+    return f"{label} {moment.strftime('%H:%M')}"
+
+
+def ago_text(ts: float, now: datetime | None = None) -> str:
+    """时间戳 → 距今多久：`刚刚` / `25 分钟前` / `3 小时前` / `2 天前`。"""
+    current = now or datetime.now()
+    try:
+        moment = datetime.fromtimestamp(float(ts))
+    except (TypeError, ValueError, OSError):
+        return ""
+    minutes = int((current - moment).total_seconds() // 60)
+    if minutes < 1:
+        return "刚刚"
+    if minutes < 60:
+        return f"{minutes} 分钟前"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} 小时前"
+    return f"{hours // 24} 天前"
+
+
 # --------------------------------------------------------------------------- #
 # 时段判定
 # --------------------------------------------------------------------------- #

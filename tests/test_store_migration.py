@@ -101,7 +101,20 @@ async def run(tmp: str, c: Checker) -> None:
     state = await migrated.get_proactive_state("小满")
     c.equal("数据未被破坏", int(state["images_today"]), 1)
     version = await migrated.get_meta("schema_version")
-    c.equal("schema_version 已更新", version, "3")
+    c.equal("schema_version 已更新", version, str(store_mod.SCHEMA_VERSION))
+
+    # ---- 附带：主动消息历史（跨次连续用，v1.0.43） ----------------------
+    print("\n[3.1] 主动消息历史")
+    for index in range(5):
+        await fresh.add_proactive_message("小满", f"第 {index} 条主动", ts=1000.0 + index)
+    rows = await fresh.recent_proactive_messages("小满", limit=3)
+    c.equal("最近 3 条按新→旧返回", [r["content"] for r in rows],
+            ["第 4 条主动", "第 3 条主动", "第 2 条主动"])
+    await fresh.add_proactive_message("小满", "  ", ts=2000.0)
+    c.equal("空内容不落库", len(await fresh.recent_proactive_messages("小满", limit=10)), 5)
+    for index in range(50):
+        await fresh.add_proactive_message("小满", f"溢出 {index}", ts=3000.0 + index, keep=5)
+    c.equal("超量被裁到 keep 条", len(await fresh.recent_proactive_messages("小满", limit=10)), 5)
 
     # ---- 附带：日志写入与清理 ------------------------------------------
     print("\n[4] 日志")

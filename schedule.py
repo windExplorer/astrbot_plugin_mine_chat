@@ -205,15 +205,135 @@ def validate_items(
     return issues, max(0.0, score)
 
 
+# 近似重复的判定阈值（二元组 Jaccard）：0.6 大约相当于「同一件事换了个说法」。
+_SIMILAR_ACTIVITY = 0.6
+
+
 def detect_repetition(items: list[dict[str, Any]], recent_activities: list[str]) -> bool:
-    """今天与最近几天的活动是否高度雷同。"""
+    """今天与最近几天的活动是否高度雷同（精确或近似重复 ≥3 条）。
+
+    v1.0.43 起加入近似判定：原来只比「字符串是否完全相同」，模型换个说法
+    （「下午在窗边写字」→「下午坐在窗边写东西」）就完全绕过避重，于是
+    「每天的活动都差不多」这种问题一直拦不住。
+    """
     if not recent_activities or not items:
         return False
-    recent_set = {text.strip() for text in recent_activities if text and text.strip()}
-    if not recent_set:
+    recent = [text.strip() for text in recent_activities if text and str(text).strip()]
+    if not recent:
         return False
-    repeated = sum(1 for item in items if item["activity"] in recent_set)
+    repeated = 0
+    for item in items:
+        activity = str(item.get("activity") or "").strip()
+        if not activity:
+            continue
+        if activity in recent or any(
+            activity_similarity(activity, other) >= _SIMILAR_ACTIVITY for other in recent
+        ):
+            repeated += 1
     return repeated >= 3
+
+
+# --------------------------------------------------------------------------- #
+# 饮食多样性（v1.0.43）
+# --------------------------------------------------------------------------- #
+# 用户实测反馈：「每天吃的东西都是一模一样的」，提了也不改。两条根因：
+#   ① 避重只看整份活动清单，而「吃了什么」这一维从来没有单独对照过；
+#   ② 判定用精确相等，同一道菜换个说法就不算重复。
+# 于是把「吃」单列成一维：扫出活动里的食物词跨天比对，重复即重做；
+# 同时把最近几天的餐次原句喂进提示词，让模型有具体的东西可避，
+# 而不是笼统地被要求「今天尽量避免重复」。
+_FOOD_WORDS: tuple[str, ...] = (
+    "关东煮", "番茄炒蛋", "麻婆豆腐", "螺蛳粉", "麻辣烫", "小龙虾", "方便面", "蛋炒饭",
+    "三明治", "冰淇淋", "家常菜", "青菜面", "汤面", "拉面", "泡面", "面条", "米线",
+    "米粉", "饺子", "馄饨", "包子", "馒头", "花卷", "炒饭", "盖饭", "便当", "盒饭",
+    "外卖", "食堂", "快餐", "汉堡", "披萨", "寿司", "火锅", "烧烤", "烤肉", "串串",
+    "砂锅", "炸鸡", "沙拉", "意面", "咖喱", "炒菜", "烤鱼", "蒸鱼", "牛排", "鸡排",
+    "月饼", "粽子", "青团", "面包", "吐司", "蛋糕", "蛋挞", "饼干", "点心", "早茶",
+    "烧饼", "油条", "煎饼", "豆浆", "牛奶", "奶茶", "咖啡", "果汁", "可乐", "酸奶",
+    "雪糕", "布丁", "水果", "西瓜", "苹果", "橘子", "葡萄", "草莓", "青菜", "粥",
+)
+# 长词优先：不这样「面包」会被同时算成「面」，连带把每天早餐的面包也算成重复。
+_FOOD_WORDS_BY_LENGTH: tuple[str, ...] = tuple(
+    sorted(_FOOD_WORDS, key=len, reverse=True)
+)
+# 主食/饮品/水果这类每天都出现也正常的，不计入「饮食单一」的判定
+# （但外卖 / 面条 / 食堂这类仍然算——「每天都是外卖」正是要拦的那种单一）。
+_FOOD_STAPLE_EXEMPT: frozenset[str] = frozenset(
+    {
+        "米饭", "粥", "面包", "吐司", "馒头", "花卷", "牛奶", "豆浆", "咖啡",
+        "果汁", "可乐", "酸奶", "水果", "西瓜", "苹果", "橘子", "葡萄", "草莓",
+        "点心", "饼干", "蛋糕", "蛋挞",
+    }
+)
+
+
+def extract_foods(text: Any) -> set[str]:
+    """扫出文本里出现的食物词（长词优先、命中后吃掉该片段，避免重复计）。"""
+    remaining = str(text or "")
+    if not remaining:
+        return set()
+    found: set[str] = set()
+    for word in _FOOD_WORDS_BY_LENGTH:
+        if word in remaining:
+            found.add(word)
+            remaining = remaining.replace(word, "\u0000")
+    return found
+
+
+def diet_repetition(
+    items: list[dict[str, Any]], recent_activities: list[str]
+) -> list[str]:
+    """今天与最近几天重复的「非主食」食物词（空列表 = 够多样）。"""
+    recent_foods = extract_foods(" ".join(str(x or "") for x in (recent_activities or [])))
+    if not recent_foods:
+        return []
+    today_foods: set[str] = set()
+    for item in items or []:
+        today_foods |= extract_foods(item.get("activity"))
+    return sorted(
+        food
+        for food in (today_foods & recent_foods)
+        if food not in _FOOD_STAPLE_EXEMPT
+    )
+
+
+def meal_lines(rows: list[dict[str, Any]], limit: int = 8) -> list[str]:
+    """从最近几天的活动里挑出「吃了什么」的行（喂给提示词用）。"""
+    lines: list[str] = []
+    for row in rows or []:
+        activity = str(row.get("activity") or "").strip()
+        if not activity or not extract_foods(activity):
+            continue
+        day = str(row.get("plan_date") or "").strip()
+        lines.append(f"{day}：{activity[:40]}" if day else activity[:40])
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def _normalize_activity(text: Any) -> str:
+    """去掉空白与标点，便于近似比对。"""
+    return re.sub(r"[\s，。、,.!！?？~～\-—_:：;；'\"“”‘’()（）\[\]【】]", "", str(text or ""))
+
+
+def _bigrams(text: str) -> set[str]:
+    normalized = _normalize_activity(text)
+    if len(normalized) < 2:
+        return {normalized} if normalized else set()
+    return {normalized[i : i + 2] for i in range(len(normalized) - 1)}
+
+
+def activity_similarity(left: Any, right: Any) -> float:
+    """两条活动的近似度（字符二元组「含入率」，0~1）。
+
+    用 交集/较短一侧 而不是 Jaccard：模型换说法时往往是「同一件事多添几个字」
+    （「下午在窗边写字」→「下午坐在窗边写东西」），Jaccard 会被另一侧的长度稀释，
+    含入率才认得出这就是同一件事。
+    """
+    first, second = _bigrams(str(left or "")), _bigrams(str(right or ""))
+    if not first or not second:
+        return 0.0
+    return len(first & second) / min(len(first), len(second))
 
 
 def fallback_items(
@@ -500,8 +620,18 @@ class ScheduleService:
                 final_source = "llm_retry"
                 continue
             recent = await self._recent_activities(persona_id, plan_date, settings)
-            if detect_repetition(items, [row["activity"] for row in recent]):
+            recent_activities = [row["activity"] for row in recent]
+            if detect_repetition(items, recent_activities):
                 last_problem = prompts.plan_retry_hint("repeat")
+                final_source = "llm_retry"
+                continue
+            repeated_foods = diet_repetition(items, recent_activities)
+            if repeated_foods:
+                # 吃的单独判一次：整份日程不雷同也可能顿顿是同一家店
+                last_problem = prompts.plan_retry_hint(
+                    "diet",
+                    f"这些食物最近几天已经吃过，今天必须换：{'、'.join(repeated_foods)}",
+                )
                 final_source = "llm_retry"
                 continue
             if "quality" in issues:
@@ -702,6 +832,8 @@ class ScheduleService:
         recent_lines: list[str] = []
         for day, activities in grouped.items():
             recent_lines.append(f"{day}：" + "；".join(activities[:10]))
+        # 吃的单独列一段（v1.0.43）：只把整份活动清单丢给模型，它看不出「吃过什么」
+        food_lines = meal_lines(recent_rows)
 
         yesterday_tail = await self._yesterday_tail(persona_id, target)
 
@@ -739,6 +871,7 @@ class ScheduleService:
             yesterday_tail=yesterday_tail,
             item_min=settings.schedule_item_min,
             item_max=settings.schedule_item_max,
+            recent_foods=food_lines,
         )
         if hint:
             body = f"{body}\n\n【上一次重做原因】\n{hint}\n"

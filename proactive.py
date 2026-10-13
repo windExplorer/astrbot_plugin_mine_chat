@@ -595,6 +595,12 @@ class ProactiveService:
             return False, "send_failed"
 
         await self.composer.archive(umo, texts)
+        # 跨次连续（v1.0.43）：留一份「最近主动说过什么」，下次生成时别再重复。
+        # 失败不影响已发出的消息，所以只记 debug。
+        try:
+            await self.store.add_proactive_message(persona_id, "\n".join(texts))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("mine_chat: 记录主动消息历史失败: %s", exc)
 
         now_dt = datetime.now()
         today = now_dt.date().isoformat()
@@ -718,6 +724,7 @@ class ProactiveService:
             return None, False, ""
 
         backend = (settings.proactive_image_backend or "local").strip().lower()
+        phase = daylight.phase_of(now_dt)
 
         if backend == "anima":
             event = self._last_event
@@ -743,6 +750,7 @@ class ProactiveService:
                 # 沉睡画面与「刚被震醒发的消息」必然矛盾
                 activity = "刚从睡梦中被手机震醒，睡眼惺忪、头发微乱、迷糊朦胧的神态"
             seed = str(info.get("seed") or "").strip()
+            image_kind = random.choice(self._IMAGE_KINDS)
             final_prompt, raw_prompt = await compose_image_prompt(
                 self.context,
                 umo=str(info.get("umo") or "") or None,
@@ -754,7 +762,7 @@ class ProactiveService:
                 style=settings.proactive_image_prompt_style,
                 language=settings.proactive_image_prompt_language,
                 now_text=now_dt.strftime("%Y-%m-%d %H:%M"),
-                image_kind=random.choice(self._IMAGE_KINDS),
+                image_kind=image_kind,
                 anchor_hint=await self._resolve_image_anchor(persona_id, settings),
                 # v1.0.42：把「此刻是白天/夜里、光照什么方向」作为事实交给提示词，
                 # 并在生成后校验——下午四点的出图提示词不许出现夜色/睡前氛围
@@ -775,14 +783,32 @@ class ProactiveService:
                 await self._record(persona_id, "img", "img_fail", umo, throttle=True)
                 return None, True, "萌绘出图失败"
             await self._record(
-                persona_id, "img", "img_ok", umo, content=f"anima {os.path.basename(path)}"
+                persona_id,
+                "img",
+                "img_ok",
+                umo,
+                # 把实际喂给画图的提示词也记进裁决日志（v1.0.43）：出图不对时
+                # 用户在控制台能一眼看到「我们到底让萌绘画了什么」，不用翻萌绘日志
+                content=f"anima {os.path.basename(path)}｜{final_prompt[:160]}",
             )
-            # desc=实际喂给画图的画面描述：文字生成必须知道图里画的是什么，
-            # 否则会出现「文字说吵醒你了、图里却在沉睡」的图文脱节
+            # desc=交代给文字生成的画面摘要：文字必须知道图里画的是什么，
+            # 否则会出现「文字说吵醒你了、图里却在沉睡」的图文脱节。
+            # 用中文摘要而不是提示词原文——danbooru 模式产出的是英文标签，
+            # 文字生成读英文标签容易跑偏；而「时段 + 活动 + 画面类型」正是提示词
+            # 生成的事实来源，与画面说的是同一件事（v1.0.43）。
+            desc = "；".join(
+                part
+                for part in (
+                    f"此刻是{phase.name}",
+                    activity,
+                    f"画面是{image_kind}",
+                )
+                if part
+            )
             return {
                 "kind": "anima",
                 "path": path,
-                "desc": (final_prompt or "")[:120],
+                "desc": desc[:120],
             }, True, ""
 
         # 本地图库（默认后端）
@@ -795,7 +821,6 @@ class ProactiveService:
             )
             await self._record(persona_id, "img", "img_dir_empty", umo, throttle=True)
             return None, True, "本地图库为空或不可读"
-        phase = daylight.phase_of(now_dt)
         path = choose_image_file(files, phase.group)
         if not path:
             await self._record(persona_id, "img", "img_fail", umo, throttle=True)

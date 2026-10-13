@@ -590,6 +590,50 @@ class ProactiveComposer:
         now = datetime.now()
         return f"{now.strftime('%Y-%m-%d')} {_WEEKDAY_NAMES[now.weekday()]} {now.strftime('%H:%M')}"
 
+    async def recent_proactive_text(self, persona_id: str, now_dt: datetime) -> str:
+        """最近几条主动消息（带时间锚），供「别重复自己说过的话」参考。
+
+        v1.0.43：原来只把 last_message 一条塞进提示词，隔一两天就没人记得
+        自己说过什么，于是同一件事反复讲、前后还可能打架。
+        """
+        try:
+            rows = await self.store.recent_proactive_messages(persona_id, 3)
+        except Exception as exc:  # noqa: BLE001 - 读不到历史不该挡住发送
+            logger.debug("mine_chat: 读取主动消息历史失败: %s", exc)
+            return ""
+        lines: list[str] = []
+        for row in rows:
+            text = " ".join(str(row.get("content") or "").split())
+            if not text:
+                continue
+            stamp = daylight.stamp_text(float(row.get("ts") or 0), now_dt)
+            lines.append(f"{stamp}：{text[:120]}" if stamp else text[:120])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _anchor_recent_chat(
+        recent_chat: str, state: dict[str, Any], now_dt: datetime
+    ) -> str:
+        """给最近对话加时间锚：最后一条是多久以前。
+
+        AstrBot 的历史记录里没有逐条时间戳（只有 role/content），但「最后一条
+        距今多久」足以让模型分清「刚聊完」和「两天没说话了」——这正是上下文
+        接不上最容易翻车的地方（把两天前的对话当成刚刚发生的接着说）。
+        """
+        if not recent_chat.strip():
+            return ""
+        last_user_at = state.get("last_user_at")
+        if not last_user_at:
+            return recent_chat
+        try:
+            stamp = daylight.stamp_text(float(last_user_at), now_dt)
+            ago = daylight.ago_text(float(last_user_at), now_dt)
+        except (TypeError, ValueError):
+            return recent_chat
+        if not stamp:
+            return recent_chat
+        return f"（最后一条消息：{stamp}，{ago}）\n{recent_chat}"
+
     # ---------------------------------------------------------------- #
     # 生成
     # ---------------------------------------------------------------- #
@@ -616,6 +660,9 @@ class ProactiveComposer:
         last_proactive = str(state.get("last_message") or "")
         # 时段事实与文案生成用同一个时间点：跨越日落后生成的消息也能被判对（v1.0.42）
         now_dt = datetime.now()
+        # 跨次连续（v1.0.43）：最近几条主动 + 最近对话的时间锚
+        recent_proactive = await self.recent_proactive_text(persona_id, now_dt)
+        recent_chat = self._anchor_recent_chat(recent_chat, state, now_dt)
 
         image_hint = (
             prompts.build_image_hint(str(image_plan.get("desc") or ""))
@@ -634,6 +681,8 @@ class ProactiveComposer:
                     "unanswered": str(unanswered),
                     "now": self.now_text(),
                     "daylight_fact": daylight.lighting_fact(now_dt),
+                    "last_proactive": last_proactive,
+                    "recent_proactive": recent_proactive,
                     "extra": settings.proactive_extra_instruction,
                     "image_hint": image_hint,
                 },
@@ -655,6 +704,7 @@ class ProactiveComposer:
             seed=seed,
             recent_chat=recent_chat,
             last_proactive=last_proactive,
+            recent_proactive=recent_proactive,
             daylight_fact=daylight.lighting_fact(now_dt),
         )
         if asleep:

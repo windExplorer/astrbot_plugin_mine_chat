@@ -14,7 +14,7 @@ import json
 import time
 from typing import Any, Callable, Iterable, Sequence
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # 只做「加列」这类幂等迁移；新装的库 DDL 已含新列，重复 ALTER 报错时忽略。
 _MIGRATIONS: tuple[str, ...] = (
@@ -117,9 +117,18 @@ _DDL: tuple[str, ...] = (
         content    TEXT
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS proactive_message (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        persona_id TEXT NOT NULL,
+        ts         REAL NOT NULL,
+        content    TEXT NOT NULL
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_plan_item_lookup ON plan_item(persona_id, plan_date, start_min)",
     "CREATE INDEX IF NOT EXISTS idx_log_persona_ts ON proactive_log(persona_id, ts DESC)",
     "CREATE INDEX IF NOT EXISTS idx_binding_persona ON window_binding(persona_id)",
+    "CREATE INDEX IF NOT EXISTS idx_pmsg_persona_ts ON proactive_message(persona_id, ts DESC)",
 )
 
 
@@ -300,6 +309,7 @@ class Store:
             ("DELETE FROM plan_item WHERE persona_id=?", (persona_id,)),
             ("DELETE FROM daily_plan WHERE persona_id=?", (persona_id,)),
             ("DELETE FROM proactive_log WHERE persona_id=?", (persona_id,)),
+            ("DELETE FROM proactive_message WHERE persona_id=?", (persona_id,)),
             ("DELETE FROM proactive_state WHERE persona_id=?", (persona_id,)),
             ("DELETE FROM window_binding WHERE persona_id=?", (persona_id,)),
             ("DELETE FROM persona_state WHERE persona_id=?", (persona_id,)),
@@ -658,6 +668,58 @@ class Store:
 
     async def list_proactive_states(self) -> list[dict[str, Any]]:
         return await self._run(self._query_sync, "SELECT * FROM proactive_state")
+
+    # ---- 主动消息历史（跨次连续用，v1.0.43） ---------------------------- #
+    async def add_proactive_message(
+        self, persona_id: str, content: str, ts: float | None = None, keep: int = 40
+    ) -> None:
+        """记一条已发出的主动消息（供下次生成时「别重复、别自相矛盾」参考）。
+
+        proactive_state.last_message 只留最后一条，隔一两天就丢干净了；
+        跨次连续需要「最近几条 + 各自什么时候说的」，所以单独一张小表。
+        keep 只保留最近若干条，避免无限增长。
+        """
+        content = str(content or "").strip()
+        if not content:
+            return
+        await self._run(
+            self._add_proactive_message_sync,
+            persona_id,
+            content[:2000],
+            float(ts) if ts is not None else time.time(),
+            max(5, int(keep)),
+        )
+
+    def _add_proactive_message_sync(
+        self, persona_id: str, content: str, ts: float, keep: int
+    ) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO proactive_message(persona_id, ts, content) VALUES(?, ?, ?)",
+                (persona_id, ts, content),
+            )
+            conn.execute(
+                "DELETE FROM proactive_message WHERE persona_id=? AND id NOT IN ("
+                "SELECT id FROM proactive_message WHERE persona_id=? "
+                "ORDER BY ts DESC, id DESC LIMIT ?)",
+                (persona_id, persona_id, keep),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def recent_proactive_messages(
+        self, persona_id: str, limit: int = 3
+    ) -> list[dict[str, Any]]:
+        """最近的主动消息（新→旧）。"""
+        limit = max(1, min(int(limit), 20))
+        return await self._run(
+            self._query_sync,
+            "SELECT ts, content FROM proactive_message WHERE persona_id=? "
+            "ORDER BY ts DESC, id DESC LIMIT ?",
+            (persona_id, limit),
+        )
 
     async def get_next_due(self) -> float | None:
         """所有启用状态下最早的 next_at（用于调度循环算超时）。"""

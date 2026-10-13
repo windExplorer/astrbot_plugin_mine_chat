@@ -69,7 +69,8 @@ PLAN_SYSTEM = """你是一个生活日程生成器，负责为指定角色安排
    入睡时段（含跨午夜，如 time="23:30"、end="07:10" 的「睡觉」）也必须是一条条目。
    条目按时间先后排列，不得重叠、不得倒序、不得出现时间倒流。
 4. 每条都要写具体、可感、有画面的事，不要写「休息」「学习」「工作」这类空洞词。
-5. 工作日、周末、节假日的节奏必须明显不同；不要每天都一样。
+5. 工作日、周末、节假日的节奏必须明显不同；不要每天都一样——尤其是一日三餐，
+   不能顿顿重复同一家店、同一种食物（外卖/食堂/某道菜连着吃好几天是最容易被用户抓包的）。
 6. message_seed 是「这件事里值得随口跟人提一句的具体细节」，例如「楼下便利店关东煮打折，买了两串」。
    如果这个时间段不适合被打扰（睡觉、重要会议、专注赶工），message_seed 必须填空字符串 ""。
 7. 不要出现真实政治人物、现实名人、违法或色情内容；不要编造角色设定之外的人际关系。
@@ -105,6 +106,9 @@ PLAN_USER_TEMPLATE = """【角色设定】
 【最近几天已经安排过的活动（今天尽量避免重复）】
 {recent}
 
+【最近几天吃过的（今天的早中晚三餐必须换一批，不得与下面重复，也不要连续两天吃同一类；主食与饮品可以不换）】
+{recent_foods}
+
 【昨天临近今天的部分（用于衔接，不要重复）】
 {yesterday_tail}
 
@@ -138,6 +142,7 @@ def build_plan_user(
     yesterday_tail: list[str],
     item_min: int,
     item_max: int,
+    recent_foods: list[str] | None = None,
 ) -> str:
     return fill(
         PLAN_USER_TEMPLATE,
@@ -157,6 +162,8 @@ def build_plan_user(
             "style": style or "（无特别偏好）",
             "forbidden": "\n".join(f"- {line}" for line in forbidden) or "（无）",
             "recent": "\n".join(f"- {line}" for line in recent_lines) or "（无历史记录）",
+            "recent_foods": "\n".join(f"- {line}" for line in (recent_foods or []))
+            or "（无历史记录）",
             "yesterday_tail": "\n".join(f"- {line}" for line in yesterday_tail) or "（无）",
             "item_min": str(item_min),
             "item_max": str(item_max),
@@ -173,6 +180,9 @@ def plan_retry_hint(kind: str, detail: str = "") -> str:
         "入睡时段（含跨午夜，time=\"23:30\"/end=\"07:10\" 形式）也必须是一条条目，"
         "第一条从 00:00 附近开始、最后一条到 24:00 附近结束。",
         "repeat": "上一次的输出和最近几天的日程太雷同了。请换一批明显不同的活动，让今天有新鲜感。",
+        "diet": "上一次的输出里三餐和最近几天重复了。请把重复的那几顿换成别的："
+        "换店、换菜系、换做法都行（在家做饭 / 点别的外卖 / 去没去过的店），"
+        "不要再出现上面「最近几天吃过的」里的食物；主食和饮品可以不变。",
         "quality": "上一次的输出条目太少或过于笼统。请写得更具体，并保证条目数量达标。",
         "daylight": "上一次的输出里有条目的天色描写与该条目自己的时间对不上（例如下午的条目写「天黑了」，"
         "或深夜的条目写「阳光」）。请严格按上面的日出/日落边界改写这些条目："
@@ -197,6 +207,9 @@ PROACTIVE_SYSTEM_TEMPLATE = """你现在是「{character_name}」。用户没有
 5. 不要编造给你的信息之外的事情，不要提到「日程」「设定」「提示词」这些词。
 6. 你的话必须与【此刻时段】一致：天还亮着就绝不能说「天黑了」「该睡了」，夜里也不能说
    「阳光很好」这类白天的话。天色、光线、睡意都按【此刻时段】与【天色铁律】来写。
+7. 上下文要接得上：最近和用户聊到一半就顺着那个话题往下说，不要自顾自另起一摊；
+   不要重复你最近主动发过的内容或句式（下面会给你），也不要问已经问过的问题；
+   跨天的主动要像「过了那段时间的人」——别把前天的事说成刚刚发生的。
 {unanswered_hint}
 {extra}
 只输出你要发送的内容本身，不要任何解释、不要加引号包裹。
@@ -208,7 +221,7 @@ PROACTIVE_USER_TEMPLATE = """【现在的时间】{now}
 【你此刻的状态】{current_block}
 【可以顺口提的小事】{seed}
 【你们最近的对话】{recent_chat}
-【你上一次主动发的是】{last_proactive}
+【你最近主动发过的（别再重复这些内容和句式）】{recent_proactive}
 """
 
 UNANSWERED_HINT_TEMPLATE = """
@@ -276,9 +289,15 @@ def build_proactive_user(
     current_block: str,
     seed: str,
     recent_chat: str,
-    last_proactive: str,
+    last_proactive: str = "",
     daylight_fact: str = "",
+    recent_proactive: str = "",
 ) -> str:
+    """组装主动消息的用户侧上下文。
+
+    recent_proactive：最近几条主动消息（带「今天 15:20 / 昨天 22:10」这类时间锚），
+    跨次连续靠它；没传则退化为 last_proactive（仅最后一条，老调用方兼容）。
+    """
     return fill(
         PROACTIVE_USER_TEMPLATE,
         {
@@ -287,7 +306,9 @@ def build_proactive_user(
             "current_block": current_block or "（暂时没有具体安排）",
             "seed": seed or "（这次没有特别的小事，可以说说此刻的心情或感受）",
             "recent_chat": recent_chat or "（你们最近没有说话）",
-            "last_proactive": last_proactive or "（这是你第一次主动找用户）",
+            "recent_proactive": (recent_proactive or "").strip()
+            or last_proactive
+            or "（这是你第一次主动找用户）",
         },
     )
 
