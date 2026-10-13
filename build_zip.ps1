@@ -65,6 +65,7 @@ if (Test-Path $zipPath) {
 $includeList = @(
     "main.py",
     "config.py",
+    "daylight.py",
     "store.py",
     "scope.py",
     "schedule.py",

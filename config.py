@@ -197,6 +197,8 @@ class Settings:
     proactive_history_messages: int = 10
     proactive_model: str = ""
     proactive_extra_instruction: str = ""
+    # 生成后时段校验：文案/出图提示词里出现与此刻时段矛盾的描写时带纠偏重写一次
+    proactive_time_guard: bool = True
 
     # 主动消息生图（本地图库 / ComfyUI萌绘联动）——「我此刻生活的画面」
     proactive_image_enabled: bool = False
@@ -401,6 +403,9 @@ class Settings:
             proactive_extra_instruction=to_str(
                 pick(proactive, "extra_instruction", "proactive_extra_instruction", "")
             ),
+            proactive_time_guard=to_bool(
+                pick(proactive, "time_guard", "proactive_time_guard", True), True
+            ),
             proactive_image_enabled=to_bool(
                 pick(proactive, "image_enabled", "proactive_image_enabled", False), False
             ),
@@ -564,6 +569,7 @@ _LEGACY_KEY_MAP: tuple[tuple[str, str, str], ...] = (
     ("proactive_history_messages", "proactive", "history_messages"),
     ("proactive_model", "proactive", "model"),
     ("proactive_extra_instruction", "proactive", "extra_instruction"),
+    ("proactive_time_guard", "proactive", "time_guard"),
     ("proactive_image_enabled", "proactive", "image_enabled"),
     ("proactive_image_dir", "proactive", "image_dir"),
     ("proactive_image_probability", "proactive", "image_probability"),

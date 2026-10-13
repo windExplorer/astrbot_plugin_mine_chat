@@ -35,6 +35,7 @@ AUTHOR = "windExplorer"
 # 若不强制重载它们，sys.modules 里会一直是被污染的旧代码。
 _RELOAD_MODULES = (
     "config",
+    "daylight",
     "store",
     "bus",
     "llm",
@@ -535,6 +536,9 @@ class MineChatPlugin(Star):
             "send_failed": "消息未送达（平台不可用）",
             "interrupted": "生成期间用户说话了，本次取消",
             "ok": "正常发出",
+            # 生成后时段校验（decision=guard）
+            "time_conflict": "文案或出图提示词与此刻时段矛盾，已带纠偏重写一次"
+            "（详情见内容列）",
             # 配图通道（decision=img）
             "img_ok": "这条带了配图",
             "img_off": "配图未开启或概率为 0",

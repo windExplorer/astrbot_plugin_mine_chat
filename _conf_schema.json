@@ -286,6 +286,12 @@
         "type": "text",
         "default": ""
       },
+      "time_guard": {
+        "description": "时间一致性校验（矛盾时重写一次）",
+        "hint": "开启后，插件会按当前时段（白天 / 傍晚 / 夜晚，由当天日出日落推出）检查生成结果：文字或出图提示词里出现了「天黑了」「该睡了」「阳光」这类与此刻时段矛盾的描写，就带纠偏说明重写一次（额外一次模型调用，结果会记进裁决日志，decision=guard）。关闭则跳过校验，只靠提示词约束。建议保持开启。",
+        "type": "bool",
+        "default": true
+      },
       "image_enabled": {
         "description": "主动消息可以随附生图",
         "hint": "开启后，主动消息有一定概率随附一张「角色此刻生活场景」的图。生图与表情包是两条独立通道（各自开关、概率与每日计数）。",
@@ -411,7 +417,7 @@
       },
       "proactive": {
         "description": "自定义主动消息提示词",
-        "hint": "填写后完全替换内置的主动消息生成提示词（作为系统提示词；用户侧上下文仍由插件组装）。可用占位符 {persona} {current_block} {seed} {recent_chat} {last_proactive} {unanswered} {now} {extra}。",
+        "hint": "填写后完全替换内置的主动消息生成提示词（作为系统提示词；用户侧上下文仍由插件组装）。可用占位符 {persona} {current_block} {seed} {recent_chat} {last_proactive} {unanswered} {now} {daylight_fact} {extra}。注意：用户侧上下文里始终会带上【此刻时段】与【天色铁律】，覆盖系统提示词不会丢掉时间一致性约束。",
         "type": "text",
         "default": ""
       }

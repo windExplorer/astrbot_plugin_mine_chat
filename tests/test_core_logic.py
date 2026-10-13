@@ -25,6 +25,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import config as config_mod  # noqa: E402  (不依赖 astrbot，可直接导入)
+import daylight as daylight_mod  # noqa: E402  (纯标准库，同 config)
 
 
 class _QuietLogger:
@@ -133,6 +134,13 @@ def test_settings(c: Checker) -> None:
     c.check("旧键也视为已选", legacy.persona_selected())
     selected = config_mod.Settings.from_config({"active_persona": "小满"})
     c.check("新键生效", selected.persona_selected())
+
+    # 时间一致性校验（v1.0.42）：默认开；可显式关闭；兼容旧平铺键
+    c.check("时段校验默认开启", config_mod.Settings.from_config({}).proactive_time_guard)
+    nested_off = config_mod.Settings.from_config({"proactive": {"time_guard": False}})
+    c.check("嵌套键可关闭", not nested_off.proactive_time_guard)
+    flat_off = config_mod.Settings.from_config({"proactive_time_guard": False})
+    c.check("旧平铺键可关闭", not flat_off.proactive_time_guard)
 
     # 表情包通道（与生图独立）：开关、独立概率与计数、旧键 token 兼容
     sticker = config_mod.Settings.from_config(
@@ -325,6 +333,7 @@ def test_schedule_view(c: Checker) -> None:
             "fmt_hhmm": config_mod.fmt_hhmm,
             "datetime": datetime,
             "date_cls": date,
+            "daylight": daylight_mod,
         },
     )
     locate = ns["locate"]
@@ -363,6 +372,11 @@ def test_schedule_view(c: Checker) -> None:
     c.check("注入含碎片", "卡在一个bug上" in block)
     c.check("注入含上次主动", "下午茶好难喝" in block)
     c.check("注入含免责声明", "不是用户的经历" in block)
+    # v1.0.42：时刻要和时段一起注入（光给「16:05」，模型照样能写出「天黑了」）
+    c.check(
+        "注入的时刻带时段与日落边界",
+        "今天日落约" in block and ("白天" in block or "夜晚" in block),
+    )
     c.check("注入长度受限", len(block) <= settings.inject_max_chars + 1, f"len={len(block)}")
 
     tight = config_mod.Settings.from_config({"inject_max_chars": 120})
@@ -413,7 +427,7 @@ def test_images(c: Checker) -> None:
             "choose_image_file",
             "image_desc_from_path",
         },
-        {"os": os, "random": random},
+        {"os": os, "random": random, "daylight": daylight_mod},
     )
     list_image_files = ns["list_image_files"]
     image_desc_from_path = ns["image_desc_from_path"]
@@ -447,6 +461,34 @@ def test_images(c: Checker) -> None:
         c.check("choose 返回候选之一", os.path.basename(choose_image_file(files) or "") in names)
         c.equal("目录不存在返回空", list_image_files(os.path.join(tmp, "nope")), [])
         c.equal("空目录返回空", list_image_files(tmp) == [], False)
+
+    # 时段感知选图（v1.0.42）：文件名带时段线索时优先挑吻合的
+    with tempfile.TemporaryDirectory() as tmp:
+        for name in ("下午的窗边.jpg", "黄昏的街.jpg", "夜景街灯.png", "IMG_0007.jpg"):
+            with open(os.path.join(tmp, name), "wb") as handle:
+                handle.write(b"x")
+        files = list_image_files(tmp)
+        all_names = {"下午的窗边.jpg", "黄昏的街.jpg", "夜景街灯.png", "IMG_0007.jpg"}
+        day_picks = {os.path.basename(choose_image_file(files, "day") or "") for _ in range(30)}
+        night_picks = {os.path.basename(choose_image_file(files, "night") or "") for _ in range(30)}
+        c.check("白天候选 = 白天线索 + 无线索", day_picks <= {"下午的窗边.jpg", "IMG_0007.jpg"})
+        c.check("白天绝不挑夜晚/黄昏线索的图", not (day_picks & {"夜景街灯.png", "黄昏的街.jpg"}))
+        c.check("夜晚候选 = 夜晚线索 + 无线索", night_picks <= {"夜景街灯.png", "IMG_0007.jpg"})
+        c.check("夜晚绝不挑白天线索的图", not (night_picks & {"下午的窗边.jpg"}))
+        c.check(
+            "无 group 时全库随机（保持旧行为）",
+            os.path.basename(choose_image_file(files) or "") in all_names,
+        )
+    with tempfile.TemporaryDirectory() as tmp:
+        for name in ("夜景a.png", "夜景b.png"):
+            with open(os.path.join(tmp, name), "wb") as handle:
+                handle.write(b"x")
+        only_night = list_image_files(tmp)
+        c.check(
+            "整批都不吻合时退回随机（不能在选图上死循环或报错）",
+            os.path.basename(choose_image_file(only_night, "day") or "") in
+            {"夜景a.png", "夜景b.png"},
+        )
     c.equal("空路径返回空", list_image_files(""), [])
 
 
@@ -693,9 +735,11 @@ def test_image_backends(c: Checker) -> None:
     )
     c.check("英文自然语言指令", "英文" in (en_prompt or ""))
     c.check("心情与碎片可选", "犯困" in (real_prompt or "") and "拿铁" not in (en_prompt or ""))
-    c.equal("10 月日落约 18:00", prompts_mod.sunset_for_month(10), "18:00")
-    c.equal("7 月日落约 19:20", prompts_mod.sunset_for_month(7), "19:20")
-    c.equal("月份越界回退 18:00", prompts_mod.sunset_for_month(13), "18:00")
+    c.equal("10 月日落约 18:00", daylight_mod.sunset_for_month(10), "18:00")
+    c.equal("7 月日落约 19:20", daylight_mod.sunset_for_month(7), "19:20")
+    c.equal("月份越界回退 18:00", daylight_mod.sunset_for_month(13), "18:00")
+    c.equal("10 月日出约 06:20", daylight_mod.sunrise_for_month(10), "06:20")
+    c.equal("月份越界回退 06:20", daylight_mod.sunrise_for_month(0), "06:20")
 
     # 覆盖校验 v2：断档必须触发 time issue（0-12 点断档的回归测试）
     ns_v = load_defs(
@@ -710,7 +754,13 @@ def test_image_backends(c: Checker) -> None:
             "MAX_ITEM_MINUTES",
             "MIN_COVERAGE_MINUTES",
         },
-        {"parse_hhmm": config_mod.parse_hhmm, "Settings": config_mod.Settings, "date_cls": date, "re": re},
+        {
+            "parse_hhmm": config_mod.parse_hhmm,
+            "Settings": config_mod.Settings,
+            "date_cls": date,
+            "re": re,
+            "daylight": daylight_mod,
+        },
     )
     norm = ns_v["normalize_items"]
     val = ns_v["validate_items"]
@@ -733,6 +783,43 @@ def test_image_backends(c: Checker) -> None:
     small_gap = _mk("00:00", "08:00") + _mk("08:30", "14:00") + _mk("14:00", "23:59")
     issues_small, _ = val(small_gap, settings_default)
     c.check("30 分钟小空隙不算断档", "time" not in issues_small)
+
+    # v1.0.42：天色一致性检查（传了 month 才做；10 月日落 18:00）
+    def _mk_act(time_s, end_s, activity):
+        return norm(
+            [{"time": time_s, "end": end_s, "activity": activity, "message_seed": ""}]
+        )
+
+    afternoon_dark = (
+        _mk_act("00:00", "07:10", "睡觉")
+        + _mk_act("07:10", "12:00", "上午处理事情")
+        + _mk_act("12:00", "16:30", "下午在窗边写字，天已经完全黑了")
+        + _mk_act("16:30", "23:30", "晚上准备睡觉")
+    )
+    issues_day, score_day = val(afternoon_dark, settings_default, month=10)
+    c.check("下午条目写「天已经完全黑了」→ daylight issue", "daylight" in issues_day)
+    c.check("天色问题会扣分", score_day < 100.0)
+    issues_no_month, _ = val(afternoon_dark, settings_default)
+    c.check("不传 month 时跳过天色检查（兼容老调用方）", "daylight" not in issues_no_month)
+
+    night_sun = (
+        _mk_act("00:00", "07:10", "睡觉")
+        + _mk_act("07:10", "12:00", "上午处理事情")
+        + _mk_act("12:00", "19:00", "下午在窗边写字，傍晚出门散步")
+        + _mk_act("19:00", "23:30", "夜里在阳台晒着太阳看书")
+    )
+    issues_night, _ = val(night_sun, settings_default, month=10)
+    c.check("夜里条目写「阳光」→ daylight issue", "daylight" in issues_night)
+
+    dusk_span = (
+        _mk_act("00:00", "07:10", "睡觉")
+        + _mk_act("07:10", "12:00", "上午处理事情")
+        + _mk_act("12:00", "17:00", "下午在窗边写字")
+        + _mk_act("17:00", "19:00", "傍晚出门散步，天色一点点暗下来，路灯陆续亮了")
+        + _mk_act("19:00", "23:30", "晚上在家看书")
+    )
+    issues_dusk, _ = val(dusk_span, settings_default, month=10)
+    c.check("跨日落的条目写「天色渐暗」不算矛盾", "daylight" not in issues_dusk)
     timed_prompt = compose(
         activity="在床上睡觉", seed="", mood="困", art_style="anime", style="natural", language="zh",
         now_text="2026-10-01 周四 04:46",
@@ -765,6 +852,36 @@ def test_image_backends(c: Checker) -> None:
     )
     c.check("不传时间不含时刻段", no_time_prompt is not None and "当前真实时刻" not in (no_time_prompt or ""))
 
+    # v1.0.42：时段硬约束 + 光照标签方向（下午四点不许画出夜景）
+    afternoon = datetime(2026, 10, 13, 16, 5)
+    lit_prompt = compose(
+        activity="在厨房做饭", seed="", mood="", art_style="anime", style="danbooru", language="zh",
+        now_text="2026-10-13 16:05",
+        daylight_fact=daylight_mod.lighting_fact(afternoon),
+        lighting_tags=daylight_mod.lighting_tags(afternoon),
+    )
+    c.check(
+        "出图指令带此刻时段硬约束",
+        "此刻时段" in (lit_prompt or "") and "天还亮着" in (lit_prompt or ""),
+    )
+    c.check(
+        "出图指令给死光照标签方向",
+        "afternoon" in (lit_prompt or "") and "daylight" in (lit_prompt or ""),
+    )
+    c.check(
+        "不传时段则不加时间规则（老调用方不受影响）",
+        "时间标签只能从这一组里挑" not in (no_time_prompt or ""),
+    )
+    image_fix = prompts_mod.build_image_time_correction(
+        "下午（白天）", "天还亮着", "afternoon, daylight", ["天黑", "晚安"]
+    )
+    c.check(
+        "出图纠偏块带矛盾词与允许的光照方向",
+        "天黑" in image_fix and "晚安" in image_fix and "afternoon" in image_fix,
+    )
+    text_fix = prompts_mod.build_time_correction("下午（白天）", "天还亮着", ["天黑"])
+    c.check("文案纠偏块带时段与矛盾词", "下午（白天）" in text_fix and "天黑" in text_fix)
+
 
 def test_channel_reason_codes(c: Checker) -> None:
     """配图/表情裁决原因码：proactive.py 落库码 ↔ main.py 中文表 ↔ 前端 REASON_TEXT。"""
@@ -788,6 +905,121 @@ def test_channel_reason_codes(c: Checker) -> None:
     for code in codes:
         c.check(f"原因码 {code} 在 main.py 中文表", f'"{code}"' in src_main)
         c.check(f"原因码 {code} 在前端 REASON_TEXT", code in src_api)
+
+    # 生成后时段校验（v1.0.42，decision=guard）：落库码同样要三处齐备
+    src_gen = open(os.path.join(root, "proactive_gen.py"), encoding="utf-8").read()
+    c.check("时段校验落库码存在", '"guard"' in src_gen and '"time_conflict"' in src_gen)
+    c.check("原因码 time_conflict 在 main.py 中文表", '"time_conflict"' in src_main)
+    c.check("原因码 time_conflict 在前端 REASON_TEXT", "time_conflict" in src_api)
+
+
+def test_daylight(c: Checker) -> None:
+    """时段判定 / 时段矛盾校验 / 模块接线（v1.0.42）。"""
+    print("\n[13] 时段判定与时段矛盾校验")
+    dt = datetime
+
+    # 10 月：日出 06:20 / 日落 18:00
+    def key(hour, minute=0):
+        return daylight_mod.phase_of(dt(2026, 10, 13, hour, minute)).key
+
+    c.equal("16:05 → 下午", key(16, 5), "afternoon")
+    c.equal("09:00 → 上午", key(9), "morning")
+    c.equal("12:00 → 中午", key(12), "noon")
+    c.equal("17:30 → 傍晚", key(17, 30), "dusk")
+    c.equal("06:30 → 清晨", key(6, 30), "dawn")
+    c.equal("04:00 → 夜晚", key(4), "night")
+    c.equal("20:00 → 夜晚", key(20), "night")
+    afternoon_at = dt(2026, 10, 13, 16, 5)
+    afternoon = daylight_mod.phase_of(afternoon_at)
+    c.check("下午不算天黑", not afternoon.is_dark and afternoon.group == "day")
+    c.check("下午是白天时段（图库按 day 挑图）", afternoon.group == "day")
+
+    fact = daylight_mod.lighting_fact(afternoon_at)
+    c.check("硬约束块说明天没黑", "天没有黑" in fact and "此刻时段" in fact)
+    c.check("硬约束块给出日落边界", "日落约 18:00" in fact)
+    night_fact = daylight_mod.lighting_fact(dt(2026, 10, 13, 23, 0))
+    c.check("夜里的硬约束块不许写白天", "阳光" in night_fact and "夜晚" in night_fact)
+    c.check("光照标签：下午含 daylight", "daylight" in daylight_mod.lighting_tags(afternoon_at))
+    c.check(
+        "光照标签：夜里是 night 方向",
+        "night" in daylight_mod.lighting_tags(dt(2026, 10, 13, 23, 0)),
+    )
+    c.check("时段行含中文时段名", "下午" in daylight_mod.phase_line(afternoon_at))
+
+    # 用户实测的那一条：下午四点说「天已经完全黑了，在考虑睡不睡觉」
+    hits = daylight_mod.find_time_conflicts(
+        "天已经完全黑了，在考虑睡不睡觉，晚安", dt(2026, 10, 13, 16, 5)
+    )
+    c.check("下午写「黑了/睡觉/晚安」被判为矛盾", len(hits) >= 2, f"hits={hits}")
+    c.check(
+        "否认句「天还没黑」不算矛盾",
+        daylight_mod.find_time_conflicts("天还没黑，再忙一会儿", dt(2026, 10, 13, 16, 5)) == [],
+    )
+    c.check(
+        "下午的午睡说法不算矛盾",
+        daylight_mod.find_time_conflicts(
+            "刚睡了个午觉，在吃点心", dt(2026, 10, 13, 14, 0)
+        )
+        == [],
+    )
+    c.check(
+        "夜里写「阳光」才是矛盾",
+        daylight_mod.find_time_conflicts("阳光真好", dt(2026, 10, 13, 23, 0)) != [],
+    )
+    c.check(
+        "夜里的「该睡了，晚安」不算矛盾",
+        daylight_mod.find_time_conflicts("该睡了，晚安", dt(2026, 10, 13, 23, 0)) == [],
+    )
+    c.check(
+        "傍晚对「天色渐暗」宽容",
+        daylight_mod.find_time_conflicts(
+            "天色渐暗，路灯都亮了", dt(2026, 10, 13, 17, 30)
+        )
+        == [],
+    )
+    c.check(
+        "英文标签里的 night 也被拦下",
+        daylight_mod.find_time_conflicts(
+            "1girl, night, moonlight, streetlight", dt(2026, 10, 13, 16, 5)
+        )
+        != [],
+    )
+    c.check(
+        "英文标签白天写法不算矛盾",
+        daylight_mod.find_time_conflicts(
+            "1girl, afternoon, daylight, bright", dt(2026, 10, 13, 16, 5)
+        )
+        == [],
+    )
+
+    # 文件名时段线索（本地图库选图用）
+    c.equal("线索：下午的窗边", daylight_mod.image_phase_hint("下午的窗边.jpg"), "day")
+    c.equal("线索：夜景", daylight_mod.image_phase_hint("夜景.png"), "night")
+    c.equal("线索：黄昏", daylight_mod.image_phase_hint("黄昏的街.jpg"), "dusk")
+    c.equal("线索：纯编号名无线索", daylight_mod.image_phase_hint("IMG_0007.jpg"), "")
+    c.check("时段不接受不吻合的图", not daylight_mod.phase_accepts("day", "night"))
+    c.check("无线索的图任何时段都能用", daylight_mod.phase_accepts("night", ""))
+
+    # 接线守卫：新模块必须同时进打包清单与热重载清单
+    # （漏了热重载 → 热更上来的实例永远跑旧代码，这是踩过的坑）
+    with open(os.path.join(ROOT, "main.py"), encoding="utf-8") as handle:
+        src_main = handle.read()
+    with open(os.path.join(ROOT, "build_zip.ps1"), encoding="utf-8") as handle:
+        src_zip = handle.read()
+    c.check("daylight 在 main.py 热重载清单", '"daylight"' in src_main)
+    c.check("daylight.py 在 build_zip includeList", '"daylight.py"' in src_zip)
+    c.check(
+        "主动消息带时段硬约束",
+        "lighting_fact" in open(
+            os.path.join(ROOT, "proactive_gen.py"), encoding="utf-8"
+        ).read(),
+    )
+    c.check(
+        "出图链路带时段硬约束与光照标签",
+        "lighting_tags" in open(
+            os.path.join(ROOT, "proactive.py"), encoding="utf-8"
+        ).read(),
+    )
 
 
 def test_injection_gate(c: Checker) -> None:
@@ -935,8 +1167,12 @@ def main() -> int:
     test_image_backends(checker)
     test_channel_reason_codes(checker)
     test_injection_gate(checker)
+    test_daylight(checker)
 
     print(f"\n共 {checker.count} 项检查，失败 {len(checker.failures)} 项")
+    # 纯 ASCII 结论行：脚本要在 GBK 控制台里跑（中文 pattern 会失真），
+    # 自动化只看这一行就知道成不成。
+    print(f"RESULT: total={checker.count} failures={len(checker.failures)}")
     if checker.failures:
         for name in checker.failures:
             print(f"  - {name}")

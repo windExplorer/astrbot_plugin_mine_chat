@@ -90,8 +90,8 @@ PLAN_USER_TEMPLATE = """【角色设定】
 
 【今天是】{date} {weekday}
 {calendar_hint}
-【今天的日落时刻】约 {sunset}
-（任何条目里关于天色/光线/环境的描写都必须与该条目的实际时段一致：日落之前的条目不得出现天黑、灯火陆续亮起、星空或月亮；只有日落之后的条目才可写夜幕与灯火。日落前后的条目可以写「天色渐暗」的过程。）
+【今天的日照边界】日出约 {sunrise}，日落约 {sunset}
+（任何条目里关于天色/光线/环境的描写都必须与该条目的实际时段一致：日出之前与日落之后的条目才可写天黑、灯火、星空或月亮；日出之后、日落之前的条目**不得**出现天黑、星空、月亮、灯火陆续亮起；只有日落之后的条目才可写夜幕。跨越日出/日落的条目可以写「天色渐暗」「天慢慢亮起来」的过程，但不能写「已经完全黑了」。）
 
 【作息参考】大约 {sleep_end} 起床，{sleep_start} 前后入睡。{night_owl_hint}
 {routine_note}
@@ -116,21 +116,8 @@ def build_plan_system() -> str:
     return PLAN_SYSTEM
 
 
-# 北半球中纬度（约北纬 30°）月度近似日落时刻（当地时间）。
-# 只是给 LLM 的天色锚点，不是天文历——±20 分钟的误差足以拦住
-# 「下午四点天就完全黑了」这类明显矛盾。
-_MONTHLY_SUNSET = {
-    1: "17:40", 2: "18:10", 3: "18:30", 4: "18:45",
-    5: "19:00", 6: "19:20", 7: "19:20", 8: "19:00",
-    9: "18:30", 10: "18:00", 11: "17:40", 12: "17:30",
-}
-
-
-def sunset_for_month(month: int) -> str:
-    """返回某月的近似日落时刻（HH:MM）；月份越界回退 18:00。"""
-    return _MONTHLY_SUNSET.get(month, "18:00")
-
-
+# 日出/日落的月度近似值（以及时段判定、天色硬约束、时段矛盾检查）统一放在
+# daylight.py —— 那里是唯一来源，本模块只负责把它给定的文本拼进模板。
 def build_plan_user(
     *,
     persona: str,
@@ -139,6 +126,7 @@ def build_plan_user(
     date_text: str,
     weekday_text: str,
     calendar_hint: str,
+    sunrise_text: str = "",
     sunset_text: str = "",
     sleep_start_text: str,
     sleep_end_text: str,
@@ -160,6 +148,7 @@ def build_plan_user(
             "date": date_text,
             "weekday": weekday_text,
             "calendar_hint": calendar_hint or "（无特殊节日）",
+            "sunrise": sunrise_text or "06:20",
             "sunset": sunset_text or "18:00",
             "sleep_start": sleep_start_text,
             "sleep_end": sleep_end_text,
@@ -185,6 +174,9 @@ def plan_retry_hint(kind: str, detail: str = "") -> str:
         "第一条从 00:00 附近开始、最后一条到 24:00 附近结束。",
         "repeat": "上一次的输出和最近几天的日程太雷同了。请换一批明显不同的活动，让今天有新鲜感。",
         "quality": "上一次的输出条目太少或过于笼统。请写得更具体，并保证条目数量达标。",
+        "daylight": "上一次的输出里有条目的天色描写与该条目自己的时间对不上（例如下午的条目写「天黑了」，"
+        "或深夜的条目写「阳光」）。请严格按上面的日出/日落边界改写这些条目："
+        "日落之前的时段一定是天亮着的，日落之后才是夜里。",
     }
     base = hints.get(kind, "上一次的输出不合格，请重做。")
     if detail:
@@ -203,6 +195,8 @@ PROACTIVE_SYSTEM_TEMPLATE = """你现在是「{character_name}」。用户没有
 3. 不要汇报行程表、不要罗列时间、不要说「我现在在做…」这种说明书口气。
 4. 控制在 1~3 句话。可以用 --- 单独一行分隔成最多 {max_segments} 条短消息，模拟真人连着发几条。
 5. 不要编造给你的信息之外的事情，不要提到「日程」「设定」「提示词」这些词。
+6. 你的话必须与【此刻时段】一致：天还亮着就绝不能说「天黑了」「该睡了」，夜里也不能说
+   「阳光很好」这类白天的话。天色、光线、睡意都按【此刻时段】与【天色铁律】来写。
 {unanswered_hint}
 {extra}
 只输出你要发送的内容本身，不要任何解释、不要加引号包裹。
@@ -210,6 +204,7 @@ PROACTIVE_SYSTEM_TEMPLATE = """你现在是「{character_name}」。用户没有
 
 PROACTIVE_USER_TEMPLATE = """【现在的时间】{now}
 （这是唯一的真实时间。你说的任何时间/时刻必须与它一致，严禁自己编造别的时间。）
+{daylight_fact}
 【你此刻的状态】{current_block}
 【可以顺口提的小事】{seed}
 【你们最近的对话】{recent_chat}
@@ -225,7 +220,8 @@ IMAGE_HINT_TEMPLATE = """
 【随图说明】这条消息发出时会随附一张图片，画面内容是：「{image_desc}」。
 这是你刚随手拍下、准备发给对方看的照片。文字要自然交代这张图的来由——
 你为什么拍它、它拍的是什么（例如「刚出门看到天烧起来了，拍了一张」
-「关东煮到货了，先给你看一眼」「屋里就这一盏灯亮着，有点舍不得睡」），
+「关东煮到货了，先给你看一眼」「窗台的绿萝冒了新叶，拍给你看」）
+——例子只是参考，照【此刻时段】的天色来写，别照抄例子里的时间，
 让文字和画面说的是同一件事，语气像平时分享照片一样随意，一两句带过即可。
 不要写成照片说明文，不要用「给你看张图」「看图」这类生硬说法，
 也不要出现与画面矛盾的情节（画面在睡觉却问「吵醒你了？」就是典型错误）。
@@ -281,15 +277,59 @@ def build_proactive_user(
     seed: str,
     recent_chat: str,
     last_proactive: str,
+    daylight_fact: str = "",
 ) -> str:
     return fill(
         PROACTIVE_USER_TEMPLATE,
         {
             "now": now_text,
+            "daylight_fact": daylight_fact or "",
             "current_block": current_block or "（暂时没有具体安排）",
             "seed": seed or "（这次没有特别的小事，可以说说此刻的心情或感受）",
             "recent_chat": recent_chat or "（你们最近没有说话）",
             "last_proactive": last_proactive or "（这是你第一次主动找用户）",
+        },
+    )
+
+
+TIME_CORRECTION_TEMPLATE = """
+【重写要求】你刚才那条消息与此刻时段矛盾：它出现了「{conflicts}」这类与现在不符的描写/说法。
+现在真实的时段是：{phase_name}——{phase_light}。
+请重写这条消息，只按此刻的天色、光线与状态来写；不要出现天黑、夜色、星空、月亮、
+灯火、睡觉、晚安这类夜晚内容（反过来，夜里也不要写白天），也不要用「还没到晚上」这类
+绕圈子的解释。其余要求不变，仍然只输出你要发送的内容本身。"""
+
+
+IMAGE_TIME_CORRECTION_TEMPLATE = """
+【重写要求】你刚才那行提示词与此刻时段矛盾：它出现了「{conflicts}」。
+现在是 {phase_name}——{phase_light}，时间氛围只能取这一组方向：{tags}。
+请重写这一行提示词，天色与光照严格按此刻时段来，不要出现与之矛盾的时间词/光照词。
+其余要求不变，仍然只输出提示词本身，单行。"""
+
+
+def build_image_time_correction(
+    phase_name: str, phase_light: str, lighting_tags: str, conflicts: list[str]
+) -> str:
+    """出图提示词的时段纠偏块（追加到原指令尾部重写一次）。"""
+    return fill(
+        IMAGE_TIME_CORRECTION_TEMPLATE,
+        {
+            "conflicts": "、".join(conflicts) or "与此刻不符的描写",
+            "phase_name": phase_name or "此刻",
+            "phase_light": phase_light or "与此刻一致的光线",
+            "tags": (lighting_tags or "").strip() or "与此刻一致的光照",
+        },
+    )
+
+
+def build_time_correction(phase_name: str, phase_light: str, conflicts: list[str]) -> str:
+    """时段矛盾后的重写指令（追加到原提示词尾部，缩短比完全重发更省上下文）。"""
+    return fill(
+        TIME_CORRECTION_TEMPLATE,
+        {
+            "conflicts": "、".join(conflicts) or "与此刻不符的描写",
+            "phase_name": phase_name or "此刻",
+            "phase_light": phase_light or "与此刻一致的光线",
         },
     )
 
@@ -310,7 +350,7 @@ PROMPT_COMPOSE_TAGS = """根据下面的生活场景事实，写一行英文 Dan
 要求：
 - 逗号分隔的小写标签短语，包含人物、动作、场景、时间氛围与情绪要素
 - 画风：{art_style_text}；画质词用：{quality_tags}
-- 只输出这一行标签本身，不要解释、不要句号、不要 markdown
+{time_rule}- 只输出这一行标签本身，不要解释、不要句号、不要 markdown
 
 {facts}"""
 
@@ -318,9 +358,20 @@ PROMPT_COMPOSE_NATURAL = """根据下面的生活场景事实，写一段绘图�
 要求：
 - 用{language_word}写一段连贯的画面描述，包含人物、动作、场景、时间氛围与情绪
 - 画风：{art_style_text}
-- 只输出提示词本身，单行，不要解释、不要引号
+{time_rule}- 只输出提示词本身，单行，不要解释、不要引号
 
 {facts}"""
+
+# 时间氛围是提示词里最容易「跟着文学先验跑偏」的一项（下午四点画出夜景），
+# 所以单列成一条硬规则，并把允许的方向直接给死。
+_TIME_RULE_TAGS = (
+    "- 时间氛围必须与下面事实里的【此刻时段】完全一致（这是最关键的一条）；"
+    "时间标签只能从这一组里挑 1~2 个贴合画面的：{tags}\n"
+)
+_TIME_RULE_NATURAL = (
+    "- 画面描述里必须说清光照/天色，方向只能取这一组：{tags}"
+    "（白天不许写成夜色/星空/睡前氛围，夜里不许写成阳光/白天）\n"
+)
 
 
 def image_art_text(art_style: str) -> str:
@@ -346,12 +397,18 @@ def build_image_compose_prompt(
     now_text: str = "",
     image_kind: str = "",
     anchor_hint: str = "",
+    daylight_fact: str = "",
+    lighting_tags: str = "",
 ) -> str | None:
     """生成「出图提示词生成」的 LLM 指令；无可用场景事实时返回 None。
 
     提示词形态由 style（danbooru 标签 / natural 自然语言）与 language（zh/en）
     决定，画风（anime/realistic）作为硬要素写进指令——参考 moe_star_whisper
     的 D6 语义：动漫工作流配英文标签、真人工作流配中文自然语言。
+
+    now_text / daylight_fact / lighting_tags 三者一起构成「时间一致性」约束：
+    时刻是事实，daylight_fact 是代码判定的时段硬约束块，lighting_tags 是允许
+    出现的光照标签方向（由 daylight.py 产出）。三者任一为空则不注入对应段落。
     """
     activity = (activity or "").strip()
     facts_lines = [f"【此刻生活场景】{activity or '日常生活的一个随意瞬间'}"]
@@ -360,7 +417,13 @@ def build_image_compose_prompt(
             f"【本张图的类型】{(image_kind or '').strip()}——画面的主体与构图必须符合该类型"
         )
     if (now_text or "").strip():
-        facts_lines.append(f"【当前真实时刻】{(now_text or '').strip()}——画面的环境、光线、天空必须与该时刻一致：深夜就是黑暗/夜灯/窗外夜色，绝不能出现阳光或白天的环境")
+        facts_lines.append(
+            f"【当前真实时刻】{(now_text or '').strip()}——画面的环境、光线、天空必须与该时刻一致："
+            "白天/下午就是明亮的天光，绝不能出现夜色、星空或睡眠氛围；"
+            "夜里就是黑暗、夜灯、窗外夜色，绝不能出现阳光或白天的环境"
+        )
+    if (daylight_fact or "").strip():
+        facts_lines.append((daylight_fact or "").strip())
     if (anchor_hint or "").strip():
         facts_lines.append(
             f"【角色锚点】当画面出现角色本人（自拍/出镜）时，必须严格使用以下外貌描述，"
@@ -372,12 +435,14 @@ def build_image_compose_prompt(
         facts_lines.append(f"【当前心情】{(mood or '').strip()}")
     facts = "\n".join(facts_lines)
 
+    tags = (lighting_tags or "").strip()
     if (style or "").strip().lower() == "danbooru":
         return fill(
             PROMPT_COMPOSE_TAGS,
             {
                 "art_style_text": image_art_text(art_style),
                 "quality_tags": image_art_quality_tags(art_style),
+                "time_rule": _TIME_RULE_TAGS.format(tags=tags) if tags else "",
                 "facts": facts,
             },
         )
@@ -386,6 +451,7 @@ def build_image_compose_prompt(
         {
             "art_style_text": image_art_text(art_style),
             "language_word": "英文" if (language or "").strip().lower() == "en" else "中文",
+            "time_rule": _TIME_RULE_NATURAL.format(tags=tags) if tags else "",
             "facts": facts,
         },
     )

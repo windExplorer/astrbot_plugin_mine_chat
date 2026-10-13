@@ -460,6 +460,8 @@ export const REASON_TEXT: Record<string, string> = {
   empty: "模型没产出内容",
   send_failed: "消息未送达",
   interrupted: "生成期间用户说话了",
+  // 生成后时段校验（decision=guard）
+  time_conflict: "与此刻时段矛盾，已带纠偏重写一次",
   // 配图通道（decision=img）
   img_ok: "这条带了配图",
   img_off: "配图未开启或概率为 0",

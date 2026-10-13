@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date as date_cls, datetime
 from typing import Any
 
+from . import daylight
 from .config import Settings, fmt_hhmm
 
 
@@ -146,7 +147,14 @@ def build_injection_block(
 
     lines: list[str] = []
     stamp = f"{current.strftime('%Y-%m-%d')} {_WEEKDAY_NAMES[current.weekday()]} {current.strftime('%H:%M')}"
-    lines.append(f"【现在的时间】{stamp}")
+    # 时刻要和时段一起给（v1.0.42）：光给「16:05」拦不住模型写「天已经完全黑了」，
+    # 补上「下午（白天），天还亮着」+ 当天的日落边界才有约束力。
+    phase = daylight.phase_of(current)
+    lines.append(
+        f"【现在的时间】{stamp} —— {phase.name}，{phase.light}；今天日落约 "
+        f"{daylight.sunset_for_month(current.month)}"
+        "（描写天色、光线、睡意时必须与此刻时段一致：天还亮着就别说天黑、该睡了）"
+    )
 
     if current_item is not None:
         lines.append(f"【你此刻】{block_text(current_item)}")

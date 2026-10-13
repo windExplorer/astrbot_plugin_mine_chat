@@ -19,6 +19,7 @@ from typing import Any
 from astrbot.api import logger
 
 from . import bus as bus_mod
+from . import daylight
 from . import kb as kb_mod
 from . import llm as llm_mod
 from .config import Settings
@@ -752,9 +753,15 @@ class ProactiveService:
                 art_style=settings.proactive_image_art_style,
                 style=settings.proactive_image_prompt_style,
                 language=settings.proactive_image_prompt_language,
-                now_text=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                now_text=now_dt.strftime("%Y-%m-%d %H:%M"),
                 image_kind=random.choice(self._IMAGE_KINDS),
                 anchor_hint=await self._resolve_image_anchor(persona_id, settings),
+                # v1.0.42：把「此刻是白天/夜里、光照什么方向」作为事实交给提示词，
+                # 并在生成后校验——下午四点的出图提示词不许出现夜色/睡前氛围
+                daylight_fact=daylight.lighting_fact(now_dt),
+                lighting_tags=daylight.lighting_tags(now_dt),
+                now=now_dt,
+                time_guard=settings.proactive_time_guard,
             )
             path = await fetch_anima_image(
                 self.context,
@@ -788,14 +795,27 @@ class ProactiveService:
             )
             await self._record(persona_id, "img", "img_dir_empty", umo, throttle=True)
             return None, True, "本地图库为空或不可读"
-        path = choose_image_file(files)
+        phase = daylight.phase_of(now_dt)
+        path = choose_image_file(files, phase.group)
         if not path:
             await self._record(persona_id, "img", "img_fail", umo, throttle=True)
             return None, True, "本地图库选图失败"
+        desc = image_desc_from_path(path)
+        hint = daylight.image_phase_hint(os.path.basename(path))
+        if hint and not daylight.phase_accepts(phase.group, hint):
+            # 整批图都不合时段（例如图库里只存了夜景照）：图照发（总不能不发），
+            # 但绝不把文件名线索喂给文字生成——否则文字会跟着文件名一起说「天黑了」，
+            # 把时间矛盾放大成图文一致的错误。
+            desc = ""
+            self._warn_image(
+                f"图库里没有与此刻时段（{phase.name}）吻合的照片，已按通用图发送并忽略"
+                "文件名线索；想让配图也贴合时段，可把文件名带上时段关键词"
+                "（如「下午的窗边.jpg」「黄昏的街.jpg」「夜景.png」），或补充对应时段的照片"
+            )
         await self._record(
             persona_id, "img", "img_ok", umo, content=f"local {os.path.basename(path)}"
         )
-        return {"kind": "local", "path": path, "desc": image_desc_from_path(path)}, True, ""
+        return {"kind": "local", "path": path, "desc": desc}, True, ""
 
     async def _plan_sticker(
         self, persona_id: str, settings: Settings, state: dict[str, Any]

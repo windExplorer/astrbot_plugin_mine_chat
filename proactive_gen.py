@@ -20,6 +20,8 @@ from typing import Any
 
 from astrbot.api import logger
 
+from . import bus as bus_mod
+from . import daylight
 from . import llm as llm_mod
 from . import prompts
 from .config import Settings, fmt_hhmm
@@ -55,10 +57,26 @@ def list_image_files(directory: str) -> list[str]:
     return result
 
 
-def choose_image_file(files: list[str]) -> str | None:
+def choose_image_file(files: list[str], group: str = "") -> str | None:
+    """本地图库选图；给了 group（day / dusk / night）时优先挑时段吻合的。
+
+    本地图库是「随机挑一张」，这是「下午四点收到夜景照片」的另一条来路：
+    文件名带时段线索的照片（「黄昏的街.jpg」「夜景.png」）会按当前时段优先；
+    一张都不吻合时退回全库随机——调用方会因此不吃这张图的文件名线索
+    （见 proactive._plan_image），免得文字跟着文件名一起说天黑。
+    """
     if not files:
         return None
-    return random.choice(files)
+    if not group:
+        return random.choice(files)
+    matched = [
+        path
+        for path in files
+        if daylight.phase_accepts(
+            group, daylight.image_phase_hint(os.path.basename(path))
+        )
+    ]
+    return random.choice(matched or files)
 
 
 def image_desc_from_path(path: str) -> str:
@@ -218,6 +236,10 @@ async def compose_image_prompt(
     now_text: str = "",
     image_kind: str = "",
     anchor_hint: str = "",
+    daylight_fact: str = "",
+    lighting_tags: str = "",
+    now: datetime | None = None,
+    time_guard: bool = True,
 ) -> tuple[str, bool]:
     """静默生成完整出图提示词；返回 (提示词, raw_prompt)。
 
@@ -225,7 +247,10 @@ async def compose_image_prompt(
     萌绘只负责画——成功时恒以 raw_prompt=True 传入（跳过萌绘的二次整理）；
     生成失败回退「日程活动原句 + 交由萌绘整理」，不阻断出图。
     now_text：当前真实时间，写进指令让画面环境/光线与时刻一致；
-    image_kind/anchor_hint：本张图的类型与角色锚点（v1.0.26）。
+    image_kind/anchor_hint：本张图的类型与角色锚点（v1.0.26）；
+    daylight_fact/lighting_tags：时段硬约束与允许的光照标签（v1.0.42）；
+    time_guard：生成后扫一遍时段矛盾，命中就带纠偏说明重写一次——提示词里
+    写「现在是 16:00」拦不住模型画出夜景（用户实测），代码层必须兜底。
     """
     instruction = prompts.build_image_compose_prompt(
         activity=activity,
@@ -237,18 +262,25 @@ async def compose_image_prompt(
         now_text=now_text,
         image_kind=image_kind,
         anchor_hint=anchor_hint,
+        daylight_fact=daylight_fact,
+        lighting_tags=lighting_tags,
     )
     if instruction is None:
         return activity, False
-    try:
-        composed = await llm_mod.chat_text(
+    now_dt = now or datetime.now()
+
+    async def _ask(extra: str = "") -> str:
+        return await llm_mod.chat_text(
             context,
             umo=umo,
             model_id=model_id,
             system_prompt="你是绘图提示词生成助手，只输出提示词本身，单行。",
-            prompt=instruction,
+            prompt=instruction + extra,
             temperature=0.8,
         )
+
+    try:
+        composed = await _ask()
     except llm_mod.LLMError as exc:  # noqa: BLE001
         logger.warning("mine_chat: 出图提示词生成失败，回退日程原句: %s", exc)
         return activity, False
@@ -256,6 +288,31 @@ async def compose_image_prompt(
     if not composed:
         logger.warning("mine_chat: 出图提示词生成为空，回退日程原句")
         return activity, False
+
+    if time_guard:
+        conflicts = daylight.find_time_conflicts(composed, now_dt)
+        if conflicts:
+            phase = daylight.phase_of(now_dt)
+            logger.info(
+                "mine_chat: 出图提示词出现时段矛盾（%s），重写一次", "、".join(conflicts)
+            )
+            try:
+                again = await _ask(
+                    prompts.build_image_time_correction(
+                        phase.name, phase.light, lighting_tags, conflicts
+                    )
+                )
+            except llm_mod.LLMError as exc:  # noqa: BLE001
+                logger.warning("mine_chat: 出图提示词重写失败，保留原稿: %s", exc)
+                again = ""
+            again = (again or "").strip().strip('"').strip()
+            if again and not daylight.find_time_conflicts(again, now_dt):
+                composed = again
+            else:
+                logger.warning(
+                    "mine_chat: 出图提示词时段矛盾未修正（%s），仍按原稿出图",
+                    "、".join(conflicts),
+                )
     return composed, True
 
 
@@ -557,6 +614,8 @@ class ProactiveComposer:
         recent_chat = await self.recent_chat(umo, settings.proactive_history_messages)
         unanswered = int(state.get("unanswered") or 0)
         last_proactive = str(state.get("last_message") or "")
+        # 时段事实与文案生成用同一个时间点：跨越日落后生成的消息也能被判对（v1.0.42）
+        now_dt = datetime.now()
 
         image_hint = (
             prompts.build_image_hint(str(image_plan.get("desc") or ""))
@@ -574,6 +633,7 @@ class ProactiveComposer:
                     "last_proactive": last_proactive,
                     "unanswered": str(unanswered),
                     "now": self.now_text(),
+                    "daylight_fact": daylight.lighting_fact(now_dt),
                     "extra": settings.proactive_extra_instruction,
                     "image_hint": image_hint,
                 },
@@ -595,6 +655,7 @@ class ProactiveComposer:
             seed=seed,
             recent_chat=recent_chat,
             last_proactive=last_proactive,
+            daylight_fact=daylight.lighting_fact(now_dt),
         )
         if asleep:
             # 手动强制发送撞上睡眠时段：把「被手机震醒」的场景说清楚，
@@ -609,7 +670,79 @@ class ProactiveComposer:
             prompt=prompt,
             temperature=0.9,
         )
+        text = await self._rewrite_if_time_conflicts(
+            text,
+            persona_id=persona_id,
+            umo=umo,
+            system=system,
+            prompt=prompt,
+            settings=settings,
+            now_dt=now_dt,
+        )
         return split_segments(text, settings.proactive_max_segments)
+
+    async def _rewrite_if_time_conflicts(
+        self,
+        text: str,
+        *,
+        persona_id: str,
+        umo: str,
+        system: str,
+        prompt: str,
+        settings: Settings,
+        now_dt: datetime,
+    ) -> str:
+        """生成后校验时段矛盾（v1.0.42）。
+
+        实测教训：光在提示词里写「现在是 16:00」拦不住模型——v1.0.25 就把真实
+        时刻写进提示词了，用户照样收到「下午四点天已经黑了，在考虑睡不睡觉」。
+        模型层不可靠，代码层兜底：扫到与此刻时段矛盾的词就带纠偏说明重写一次；
+        重写不干净时保留矛盾更少的那一版，并把这件事写进裁决日志（decision=guard），
+        用户在控制台能查到「这条为什么读起来怪」。
+        """
+        if not getattr(settings, "proactive_time_guard", True):
+            return text
+        conflicts = daylight.find_time_conflicts(text, now_dt)
+        if not conflicts:
+            return text
+        phase = daylight.phase_of(now_dt)
+        logger.info(
+            "mine_chat: 主动消息出现时段矛盾（%s），带纠偏重写一次", "、".join(conflicts)
+        )
+        best_text, best_conflicts = text, conflicts
+        try:
+            again = await llm_mod.chat_text(
+                self.context,
+                umo=umo,
+                model_id=settings.proactive_model,
+                system_prompt=system,
+                prompt=prompt + prompts.build_time_correction(
+                    phase.name, phase.light, conflicts
+                ),
+                temperature=0.9,
+            )
+        except llm_mod.LLMError as exc:  # noqa: BLE001 - 重写失败就用原稿
+            logger.warning("mine_chat: 时段矛盾重写失败，保留原稿: %s", exc)
+            again = ""
+        if again:
+            again_conflicts = daylight.find_time_conflicts(again, now_dt)
+            if len(again_conflicts) < len(best_conflicts):
+                best_text, best_conflicts = again, again_conflicts
+        try:
+            await self.store.add_log(
+                persona_id,
+                "guard",
+                "time_conflict",
+                umo,
+                content=(
+                    f"原稿矛盾词：{'、'.join(conflicts)}；"
+                    f"重写后：{'、'.join(best_conflicts) if best_conflicts else '无'}"
+                ),
+            )
+            bus_mod.notify()
+        except Exception as exc:  # noqa: BLE001 - 日志失败不影响已生成的文案
+            logger.debug("mine_chat: 写时段校验日志失败: %s", exc)
+        return best_text
 
     # ---------------------------------------------------------------- #
     # 投递

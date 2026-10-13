@@ -17,6 +17,7 @@ from typing import Any
 from astrbot.api import logger
 
 from . import bus as bus_mod
+from . import daylight
 from . import kb as kb_mod
 from . import llm as llm_mod
 from . import prompts
@@ -114,12 +115,18 @@ def normalize_items(raw_items: Any, *, limit: int = 48) -> list[dict[str, Any]]:
     return items
 
 
-def validate_items(items: list[dict[str, Any]], settings: Settings) -> tuple[list[str], float]:
+def validate_items(
+    items: list[dict[str, Any]], settings: Settings, *, month: int | None = None
+) -> tuple[list[str], float]:
     """返回 (问题标签列表, 质量分 0~100)。
 
     覆盖检查（v1.0.30 重写）：把条目展开到 0-1440 时间轴（跨午夜条目的
     越界部分折回凌晨），要求**连续覆盖全天**——这是「0-12 点断档」问题的
     根治：断档现在直接记 time issue 触发重试，而不是只扣几分。
+
+    month（v1.0.42 新增，可选）：给出计划日期的月份时，额外做天色一致性检查
+    ——下午的条目写「天黑」、深夜的条目写「阳光」都记 daylight issue 触发重试。
+    不传 month 则跳过（老调用方/单测不受影响）。
     """
     if not items:
         return ["quality"], 0.0
@@ -176,11 +183,22 @@ def validate_items(items: list[dict[str, Any]], settings: Settings) -> tuple[lis
     if total < MIN_COVERAGE_MINUTES:
         issues.append("time")
 
+    # 天色一致性（v1.0.42）：日落之前的条目不许写「天黑了」，日落后不许写「阳光」。
+    # 这是「主动消息说下午四点天已经黑了」的上游根治——坏条目一旦入库，下游
+    # 的文字与出图都会跟着错；在这里拦住它，代价只是一次重试。
+    daylight_hits: list[tuple[int, str]] = []
+    if month is not None:
+        daylight_hits = daylight.plan_conflicts(items, month)
+        if daylight_hits:
+            issues.append("daylight")
+
     score = 100.0
     if "quality" in issues:
         score -= 25.0
     if "time" in issues:
         score -= 30.0
+    if daylight_hits:
+        score -= 25.0
     score -= min(20.0, gaps * 5.0)
     if not any(item["message_seed"] for item in items):
         score -= 10.0
@@ -420,6 +438,10 @@ class ScheduleService:
         final_source = source
         raw_text = ""
         last_problem = ""
+        try:
+            plan_target = datetime.strptime(plan_date, "%Y-%m-%d").date()
+        except ValueError:
+            plan_target = date_cls.today()
 
         # 当天实际作息：以日期为种子做确定性浮动（偶尔熬夜 / 赖床），
         # 同一天多次生成与分级重试之间保持一致。
@@ -461,7 +483,7 @@ class ScheduleService:
             payload = llm_mod.extract_json(raw_text)
             raw_items = payload.get("schedule") if isinstance(payload, dict) else payload
             items = normalize_items(raw_items)
-            issues, quality = validate_items(items, settings)
+            issues, quality = validate_items(items, settings, month=plan_target.month)
 
             if not items:
                 last_problem = prompts.plan_retry_hint("format")
@@ -469,6 +491,12 @@ class ScheduleService:
                 continue
             if "time" in issues:
                 last_problem = prompts.plan_retry_hint("time")
+                final_source = "llm_retry"
+                continue
+            if "daylight" in issues:
+                last_problem = prompts.plan_retry_hint(
+                    "daylight", self._daylight_detail(items, plan_target.month)
+                )
                 final_source = "llm_retry"
                 continue
             recent = await self._recent_activities(persona_id, plan_date, settings)
@@ -691,7 +719,8 @@ class ScheduleService:
             date_text=target.strftime("%Y年%m月%d日"),
             weekday_text=_WEEKDAY_NAMES[target.weekday()],
             calendar_hint=calendar_hint(target),
-            sunset_text=prompts.sunset_for_month(target.month),
+            sunrise_text=daylight.sunrise_for_month(target.month),
+            sunset_text=daylight.sunset_for_month(target.month),
             sleep_start_text=fmt_hhmm(
                 routine["sleep_start"] if routine else settings.schedule_sleep_start_min
             ),
@@ -714,6 +743,22 @@ class ScheduleService:
         if hint:
             body = f"{body}\n\n【上一次重做原因】\n{hint}\n"
         return body
+
+    @staticmethod
+    def _daylight_detail(items: list[dict[str, Any]], month: int) -> str:
+        """把天色矛盾的具体条目写进重试提示——只说「重做」模型不知道该改哪条。"""
+        parts: list[str] = []
+        for index, marker in daylight.plan_conflicts(items, month):
+            if index >= len(items):
+                continue
+            item = items[index]
+            span = (
+                f"{fmt_hhmm(int(item.get('start_min') or 0))}-"
+                f"{fmt_hhmm(int(item.get('end_min') or 0))}"
+            )
+            activity = str(item.get("activity") or "")[:30]
+            parts.append(f"第 {index + 1} 条（{span}「{activity}」）出现「{marker}」")
+        return "；".join(parts)
 
     async def _recent_activities(
         self, persona_id: str, plan_date: str, settings: Settings
