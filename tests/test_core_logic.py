@@ -1091,8 +1091,10 @@ def test_image_backends(c: Checker) -> None:
     _Llm.reply = None
     prompt_fb, raw_fb = asyncio.run(compose_image_prompt(**kw))
     c.check(
-        "LLM 异常回退也带画风与角色",
-        "二次元动漫插画风格" in prompt_fb and "银发红瞳少女" in prompt_fb and raw_fb is False,
+        "LLM 异常回退也带画风与角色，且仍跳过萌绘二次整理",
+        "二次元动漫插画风格" in prompt_fb
+        and "银发红瞳少女" in prompt_fb
+        and raw_fb is True,
     )
     _Llm.reply = ""
     prompt_empty, _ = asyncio.run(compose_image_prompt(**kw))
@@ -1107,6 +1109,15 @@ def test_image_backends(c: Checker) -> None:
     with open(os.path.join(ROOT, "proactive.py"), encoding="utf-8") as _f:
         _pr = _f.read()
     c.check("compose_image_prompt 全部返回路径都过硬注入", _pg.count("return _guard(") >= 4)
+    # v1.0.46：回退路径不许再退回 raw_prompt=False —— 那会让萌绘用 LLM 把
+    # 刚硬拼的画风标识/角色锚点整体洗成「写实中文」，正是偶发跑偏的元凶。
+    c.check("回退路径不再交出提示词整理权", "return _guard(activity), False" not in _pg)
+    c.check(
+        "四条路径全部 raw_prompt=True",
+        _pg.count("return _guard(activity), True") == 3
+        and "return _guard(composed), True" in _pg,
+    )
+    c.check("fetch_anima_image 默认也跳过二次整理", "raw_prompt: bool = True" in _pg)
     c.check("萌绘调用按画风补负向词", "merge_negative_prompt" in _pg)
     c.check(
         "调用点把人设与画风传进出图链路",

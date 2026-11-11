@@ -246,8 +246,14 @@ async def compose_image_prompt(
     """静默生成完整出图提示词；返回 (提示词, raw_prompt)。
 
     提示词由本插件单次 LLM 后台静默生成（只输出提示词本身、单行），
-    萌绘只负责画——成功时恒以 raw_prompt=True 传入（跳过萌绘的二次整理）；
-    生成失败回退「日程活动原句 + 交由萌绘整理」，不阻断出图。
+    萌绘只负责画。**所有返回路径都恒以 raw_prompt=True 传入**（包括生成失败
+    时回退「日程活动原句 + 代码层硬拼的标识」），绝不把提示词交给萌绘二次整理：
+    v1.0.46 实测，萌绘在 source 非空 + raw_prompt=False 时会无条件启动一次 LLM
+    整理（third_party_llm_refine 默认开），按底模把提示词整体改写成「真人写实摄影
+    风格的连贯中文」或 Anima 标签，刚硬拼的画风标识与角色锚点就在这一步被洗掉；
+    而整理本身还可能失败/返回空从而保留原文。这正是「大多数照片正常、偶尔角色
+    外貌与性别随机、偶尔画成真人」的偶发来源：成功路径 raw_prompt=True 原样进，
+    只有 LLM 生成失败/空输出的那几次才掉进 raw_prompt=False 的整理分支。
     now_text：当前真实时间，写进指令让画面环境/光线与时刻一致；
     image_kind/anchor_hint：本张图的类型与角色锚点（v1.0.26）；
     daylight_fact/lighting_tags：时段硬约束与允许的光照标签（v1.0.42）；
@@ -285,7 +291,7 @@ async def compose_image_prompt(
         )
 
     if instruction is None:
-        return _guard(activity), False
+        return _guard(activity), True
     now_dt = now or datetime.now()
 
     async def _ask(extra: str = "") -> str:
@@ -302,11 +308,11 @@ async def compose_image_prompt(
         composed = await _ask()
     except llm_mod.LLMError as exc:  # noqa: BLE001
         logger.warning("mine_chat: 出图提示词生成失败，回退日程原句: %s", exc)
-        return _guard(activity), False
+        return _guard(activity), True
     composed = composed.strip().strip('"').strip()
     if not composed:
         logger.warning("mine_chat: 出图提示词生成为空，回退日程原句")
-        return _guard(activity), False
+        return _guard(activity), True
 
     if time_guard:
         conflicts = daylight.find_time_conflicts(composed, now_dt)
@@ -341,7 +347,9 @@ async def fetch_anima_image(
     *,
     prompt: str,
     workflow: str = "",
-    raw_prompt: bool = False,
+    # 默认就跳过萌绘的二次整理：source 非空时它会无条件用 LLM 重写整条提示词，
+    # 把画风标识/角色锚点洗掉。漏传参数也不该掉回那个陷阱。
+    raw_prompt: bool = True,
     negative_prompt: str = "",
     art_style: str = "anime",
 ) -> str | None:

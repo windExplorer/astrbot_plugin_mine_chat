@@ -1,5 +1,53 @@
 # 更新日志
 
+## v1.0.46（补上偶发跑偏的真正元凶：回退路径把提示词交回萌绘二次整理）
+
+**现象（用户纠正）**：照片**大多数时候是正常的**，只是「有时候」发的那张正向提示词里
+缺少角色描写与画风标识，于是角色外貌、性别随机，甚至画成真人。上一版把问题讲成了
+「提示词里一直没有」，方向只对了半截：v1.0.45 的代码层硬注入保证的是**成功路径**，
+解释不了「为什么平时是对的、只有少数几次错」。
+
+**根因（偶发性 = 两条返回路径 + 萌绘侧的二次整理）**：
+
+- `compose_image_prompt` 有两条出口：LLM 生成成功 → `raw_prompt=True`；生成失败 /
+  返回空 → `raw_prompt=False` 且把活动原句直接回退。绝大多数出图走前者，所以平时正常。
+- 萌绘 `comfyui_draw` 的 `_need_prompt_refine`（`astrbot-comfyui-anima/main.py:4236-4240`）
+  在 `source` 非空时，只要 `third_party_llm_refine` 为默认 `True` 就**无条件**返回 True；
+  `raw_prompt=False` 时创建的 `_llm_task` 其结果在 `main.py:8258` **整体覆盖** `positive`。
+  本插件固定传 `source="萌萌日程"`，回退路径必然进这次整理。
+- 整理按工作流底模分流：`_rewrite_to_real_llm`（`main.py:3324-3350`）的 system prompt
+  要求「改写为一段可以直接用于**真人/写实摄影风格**生图的中文提示词」「把中英混杂
+  统一成连贯的中文描述」；另一支 `_rewrite_to_anima_llm` 则整体换成另一套标签。无论
+  哪一支，v1.0.45 刚硬拼进去的 `anime style / 2d illustration` 与英文角色锚点都会被
+  洗掉或中文化，底模失去角色与画风锚定 → 自由发挥，画成真人、性别随机。
+- 更飘的是：整理本身失败/超时/返回空时萌绘「保留原提示词」（`main.py:4276`、
+  `4443-4459`），于是同样的回退条件下还会出现「有时被改写、有时原样」两种结果。
+- 图库里 `prompt` 与 `prompt_raw` 存的都是**整理后的最终 positive**（`main.py:9495-9502`），
+  所以用户看到的「正向提示词缺标识」是改写后的文本，不能据此反推上游原文——这正是
+  上一版误判方向的缘由。
+
+**修复**：
+
+- `compose_image_prompt` 的**四条返回路径**（指令为空 / LLM 异常 / 输出为空 / 成功及
+  时段纠偏重写）统一 `raw_prompt=True`。回退时虽然只剩活动原句，但 `_guard()` 已把
+  画风标识、角色锚点、角色名硬拼进去，交给萌绘整理只会坏事——现在整条链路不再把
+  提示词丢给任何 LLM 二次改写。
+- `fetch_anima_image` 的 `raw_prompt` 默认值由 `False` 改为 `True`：将来即使有调用方
+  漏传，也不会掉回二次整理陷阱。
+- `source` 保留不动（只用于萌绘日志/图库溯源，`external=True` 才是取图契约），不再
+  依赖「把 source 留空」来规避整理。
+
+**边界 / 排查建议**：`raw_prompt=True` 只跳过萌绘的 LLM 整理，仍有确定性追加（画质
+前缀、`_sanitize_prompt_syntax`、角色卡命中、LoRA 触发词）。若仍偶发跑偏，请在萌绘侧
+核对目标工作流是否 `require_prompt=false`（`main.py:8024-8033` 会用固定提示词**整体
+替换**调用方 prompt）、底模 `prompt_style` 与 `third_party_llm_refine`。本插件裁决日志
+`img_ok` 记的是我们实际发出去的提示词，与萌绘图库里的最终 positive 对照，差值就是
+萌绘侧追加/替换的部分。
+
+**自检**：`test_core_logic.py` 新增 3 项（回退路径不再交出整理权、四条路径全部
+`raw_prompt=True`、`fetch_anima_image` 默认值），并把回退用例改断言 `raw=True`，
+共 338 项全过；`test_schema.py` / `test_store_migration.py` 通过。
+
 ## v1.0.45（出图跑偏：角色描写与画风标识改为代码层强制注入）
 
 **现象（用户实测两条）**：
