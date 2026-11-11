@@ -79,6 +79,7 @@ $includeList = @(
     "webui_api.py",
     "_conf_schema.json",
     "metadata.yaml",
+    "logo.png",
     "requirements.txt",
     "README.md",
     "CHANGELOG.md",
