@@ -951,6 +951,169 @@ def test_image_backends(c: Checker) -> None:
     text_fix = prompts_mod.build_time_correction("下午（白天）", "天还亮着", ["天黑"])
     c.check("文案纠偏块带时段与矛盾词", "下午（白天）" in text_fix and "天黑" in text_fix)
 
+    # ------------------------------------------------------------------ #
+    # v1.0.45：出图提示词「角色描写 + 画风标识」代码层硬注入
+    # 用户实测两个问题：画出来是别的角色甚至换性别；设了动漫却画真人。
+    # 共同根因是这两项只写进给 LLM 的指令、最终 prompt 里没有，且 raw_prompt=True
+    # 让萌绘跳过二次整理，丢了无人兜底。以下用例直接验证「最终提示词」里有什么。
+    # ------------------------------------------------------------------ #
+    guard = prompts_mod.enforce_image_guard
+    anime_tags = guard(
+        "1girl, reading by the window",
+        art_style="anime", style="danbooru", language="en",
+        anchor="silver hair, red eyes, 1girl", character_name="小樱",
+    )
+    c.check(
+        "动漫标签强制含画风标识",
+        all(t in anime_tags for t in ("anime style", "2d illustration", "anime screencap")),
+    )
+    c.check("动漫标签强制含角色外貌", "silver hair, red eyes, 1girl" in anime_tags)
+    c.check("硬注入保持单行", "\n" not in anime_tags)
+    c.check(
+        "硬注入不重复已有标签",
+        guard("anime style, 1girl, reading", art_style="anime", style="danbooru").count(
+            "anime style"
+        ) == 1,
+    )
+    real_zh = guard(
+        "她在厨房做饭", art_style="realistic", style="natural", language="zh",
+        anchor="二十岁出头的女生，黑色长直发", character_name="小满",
+    )
+    c.check(
+        "真人中文强制含写实画风",
+        "photorealistic" in real_zh and "真人写实摄影风格" in real_zh,
+    )
+    c.check("自然模式强制含角色名", "角色本人：小满" in real_zh)
+    c.check("自然模式强制含外貌描写", "黑色长直发" in real_zh)
+    anime_zh = guard("在图书馆看书", art_style="anime", style="natural", language="zh")
+    c.check(
+        "动漫中文强制画风且排除真人",
+        "二次元动漫插画风格" in anime_zh and "非真人写实" in anime_zh,
+    )
+    en_guard = guard(
+        "reading a book", art_style="anime", style="natural", language="en",
+        character_name="Sakura",
+    )
+    c.check(
+        "英文自然语言用英文风格句",
+        "not photorealistic" in en_guard and "the character is Sakura" in en_guard,
+    )
+    c.check("空输入也能出画风标识", "anime style" in guard("", art_style="anime", style="danbooru"))
+
+    # 负向提示词：按画风补齐反向排除词，用户原词保留、不重复
+    neg_anime = prompts_mod.merge_negative_prompt("anime", "blurry, lowres")
+    c.check(
+        "动漫补写实排除词",
+        all(t in neg_anime for t in ("photorealistic", "photo", "3d render")),
+    )
+    c.check("保留用户负向词", neg_anime.startswith("blurry, lowres"))
+    neg_real = prompts_mod.merge_negative_prompt("realistic", "")
+    c.check("真人补动漫排除词", "anime" in neg_real and "illustration" in neg_real)
+    dedup_parts = [
+        p.strip()
+        for p in prompts_mod.merge_negative_prompt("anime", "realistic, blurry").split(",")
+    ]
+    c.check(
+        "负向词去重（按标签而非子串，photorealistic 不算重复）",
+        dedup_parts.count("realistic") == 1 and "blurry" in dedup_parts,
+    )
+    c.check("未知画风按动漫兜底", "photorealistic" in prompts_mod.merge_negative_prompt("???"))
+
+    # 生成指令：角色锁 / 人设全文 / 画风标识都进硬事实块
+    locked = compose(
+        activity="在窗边看书", seed="", mood="", art_style="anime", style="danbooru",
+        language="en", character_name="小樱",
+        persona_prompt="你叫小樱，是一名银发红瞳的少女，说话温柔。",
+        anchor_hint="1girl, silver hair, red eyes",
+    )
+    c.check("生成指令带角色锁", "角色锁" in (locked or "") and "小樱" in (locked or ""))
+    c.check("生成指令禁止换人换性别", "不许改变性别" in (locked or ""))
+    c.check("生成指令带人设摘录", "银发红瞳" in (locked or ""))
+    c.check(
+        "生成指令要求原样写画风标识",
+        "必须原样包含" in (locked or "") and "anime screencap" in (locked or ""),
+    )
+    c.check("生成指令要求锚点原样写入输出", "必须原样写进输出" in (locked or ""))
+    natural_lock = compose(
+        activity="做饭", seed="", mood="", art_style="anime", style="natural",
+        language="zh", character_name="小满",
+    )
+    c.check("自然语言指令的画风标识用中文", "二次元动漫插画风格" in (natural_lock or ""))
+    c.check("无锚点时仍无「角色锚点」段（回归）", "角色锚点" not in (natural_lock or ""))
+
+    # compose_image_prompt：成功 / LLM 异常 / 空输出，三条返回路径都过硬注入
+    class _LLMError(Exception):
+        pass
+
+    class _Llm:
+        LLMError = _LLMError
+        reply = "一个女孩在窗边看书"
+
+        async def chat_text(self, *args, **kwargs):
+            if _Llm.reply is None:
+                raise _LLMError("boom")
+            return _Llm.reply
+
+    class _Daylight:
+        @staticmethod
+        def find_time_conflicts(text, now):
+            return []
+
+        @staticmethod
+        def phase_of(now):
+            return type("P", (), {"name": "下午", "light": "天还亮着"})()
+
+    pg_ns = load_defs(
+        "proactive_gen.py",
+        {"compose_image_prompt"},
+        {
+            "datetime": datetime,
+            "prompts": prompts_mod,
+            "llm_mod": _Llm(),
+            "daylight": _Daylight,
+            "logger": _QuietLogger(),
+        },
+    )
+    compose_image_prompt = pg_ns["compose_image_prompt"]
+    kw = dict(
+        context=None, umo=None, model_id="", activity="在窗边看书", seed="", mood="",
+        art_style="anime", style="natural", language="zh", time_guard=False,
+        anchor_hint="银发红瞳少女", character_name="小樱",
+        persona_prompt="你叫小樱，银发红瞳的少女。",
+    )
+    _Llm.reply = "一个女孩在窗边看书"
+    prompt_ok, raw_ok = asyncio.run(compose_image_prompt(**kw))
+    c.check("LLM 输出必带画风标识", "二次元动漫插画风格" in prompt_ok and raw_ok is True)
+    c.check(
+        "LLM 输出必带角色名与外貌",
+        "角色本人：小樱" in prompt_ok and "银发红瞳少女" in prompt_ok,
+    )
+    _Llm.reply = None
+    prompt_fb, raw_fb = asyncio.run(compose_image_prompt(**kw))
+    c.check(
+        "LLM 异常回退也带画风与角色",
+        "二次元动漫插画风格" in prompt_fb and "银发红瞳少女" in prompt_fb and raw_fb is False,
+    )
+    _Llm.reply = ""
+    prompt_empty, _ = asyncio.run(compose_image_prompt(**kw))
+    c.check(
+        "LLM 空输出回退也带画风与角色",
+        "二次元动漫插画风格" in prompt_empty and "角色本人：小樱" in prompt_empty,
+    )
+
+    # 跨模块接线守卫：回退路径不许再被「顺手简化」成直接 return activity
+    with open(os.path.join(ROOT, "proactive_gen.py"), encoding="utf-8") as _f:
+        _pg = _f.read()
+    with open(os.path.join(ROOT, "proactive.py"), encoding="utf-8") as _f:
+        _pr = _f.read()
+    c.check("compose_image_prompt 全部返回路径都过硬注入", _pg.count("return _guard(") >= 4)
+    c.check("萌绘调用按画风补负向词", "merge_negative_prompt" in _pg)
+    c.check(
+        "调用点把人设与画风传进出图链路",
+        "persona_prompt=persona_prompt" in _pr
+        and "art_style=settings.proactive_image_art_style" in _pr,
+    )
+
 
 def test_channel_reason_codes(c: Checker) -> None:
     """配图/表情裁决原因码：proactive.py 落库码 ↔ main.py 中文表 ↔ 前端 REASON_TEXT。"""

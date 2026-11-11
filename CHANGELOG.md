@@ -1,5 +1,60 @@
 # 更新日志
 
+## v1.0.45（出图跑偏：角色描写与画风标识改为代码层强制注入）
+
+**现象（用户实测两条）**：
+
+1. 发给 ComfyUI萌绘的提示词里**没有角色描写**，画出来经常是别的角色，甚至性别都变了。
+2. 配置里选的是「动漫」画风，却经常画成真人——提示词里根本没有画风标识。
+
+**根因（同一类错误：把硬约束只写给了模型，没写进最终字符串）**：
+
+- 出图链路与文案生成是两条完全独立的 `llm_mod.chat_text` 调用。人设全文
+  `resolver.persona_prompt()` 只在 `ProactiveComposer.generate` 里读，出图这条
+  `compose_image_prompt` 一次都没读；出图里唯一的角色信息是 `anchor_hint`
+  （`_resolve_image_anchor`：手填锚点 > 知识库 > 空），而两个锚点默认都是空串。
+- 就算拿到锚点，`prompts.build_image_compose_prompt` 写的也是「**当画面出现角色本人
+  （自拍/出镜）时**，必须严格使用以下外貌描述」——条件式软指令，而 `_IMAGE_KINDS`
+  六选一里有四类明确「画面无人物」，逻辑上多数图根本不注入。
+- 画风 `image_art_style` 只被填进 `PROMPT_COMPOSE_TAGS` / `PROMPT_COMPOSE_NATURAL`
+  的占位符，**要求模型自己写** `anime style`；`compose_image_prompt` 全程只有
+  `composed = await _ask()`，没有任何代码层拼接。成功时又恒以 `raw_prompt=True`
+  交给萌绘（主动跳过它的二次整理），模型一丢就无人兜底——中文 natural 模式尤其
+  容易只输出一句白话场景。LLM 失败/空输出的回退分支更直接 `return activity, False`，
+  把日程活动原句丢给萌绘，角色与画风 100% 缺失。
+
+**修复**：
+
+- `prompts.py` 新增 `enforce_image_guard()`：把「给死的画风标识 + 角色外貌锚点 +
+  角色名」在**代码层**拼进最终提示词，danbooru 用逗号接标签、自然语言用风格短句 +
+  角色身份句，已存在的标识按子串去重，输出保证单行。画风标识按 `anime/realistic` ×
+  `zh/en` 给死四套，不再指望模型临场发挥。
+- `proactive_gen.compose_image_prompt()` 新增 `character_name` / `persona_prompt` 参数，
+  定义 `_guard()` 并让**全部四条返回路径**（指令为空 / LLM 异常 / 输出为空 / 成功及
+  时段纠偏重写）统一过一遍；回退分支从此也带角色与画风。
+- `proactive._plan_image()` 出图前读 `persona_display_name` / `persona_prompt` 并传入，
+  人设全文第一次进入出图链路；`build_image_compose_prompt` 新增无条件的
+  【角色设定】/【角色锁】/【角色锚点】硬事实块，明确「只要出现人物就必须是本人，
+  不许换人、不许改变性别」，锚点从条件式改为「必须原样写进输出」。
+- 两套生成指令模板新增 `{art_lock}`：把画风标识作为「必须原样包含，缺一个都不合格」
+  的给死值写进指令，与代码层硬拼共用同一份常量（`image_art_lock_tags` /
+  `image_style_phrase`）。
+- `prompts.py` 新增 `merge_negative_prompt()`，`fetch_anima_image` 按画风自动在负向
+  通道补相反画风的排除词（动漫补 `realistic/photorealistic/photo/3d render`，真人补
+  `anime/cartoon/illustration`）。正向提示词压不住底模的写实倾向，负向通道才是对的地方；
+  用户自己写的负向词原样保留、只补缺的、不重复。
+- 配置与控制台文案（`_conf_schema.json` / `WorldView.vue`）同步：锚点不再是「出镜时
+  才注入」，明确「强制写进每张出图提示词」，并提示把 `1girl`/`1boy` 性别标签写进锚点；
+  `image_negative_prompt` 说明插件会自动补画风排除词。
+
+**边界**：如果用户既没填锚点、也没绑知识库、人格设定里又完全没写外貌，代码只能
+锁定「角色名 + 不许换性别」，没法凭空造出发色瞳色——这时请按控制台提示补一份外貌描写。
+另外若萌绘所绑工作流/底模本身就带强写实 LoRA，仍应以工作流侧配置为准。
+
+**自检**：`test_core_logic.py` 新增 29 项（硬注入四种画风/语种组合、去重、单行、
+负向词合并、生成指令角色锁、`compose_image_prompt` 成功与两条回退路径、跨模块接线守卫），
+共 335 项全过；`test_schema.py` / `test_store_migration.py` 通过。
+
 ## v1.0.44（图文对不上：随图说明挪到用户侧末尾 + 画面线索改用真正喂进去的提示词）
 
 **现象**：带图的那条主动消息里，文字和图片说的不是同一件事。

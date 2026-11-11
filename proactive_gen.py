@@ -240,6 +240,8 @@ async def compose_image_prompt(
     lighting_tags: str = "",
     now: datetime | None = None,
     time_guard: bool = True,
+    character_name: str = "",
+    persona_prompt: str = "",
 ) -> tuple[str, bool]:
     """静默生成完整出图提示词；返回 (提示词, raw_prompt)。
 
@@ -251,6 +253,9 @@ async def compose_image_prompt(
     daylight_fact/lighting_tags：时段硬约束与允许的光照标签（v1.0.42）；
     time_guard：生成后扫一遍时段矛盾，命中就带纠偏说明重写一次——提示词里
     写「现在是 16:00」拦不住模型画出夜景（用户实测），代码层必须兜底。
+    character_name/persona_prompt（v1.0.45）：人设以前只走文案生成，出图一次
+    都没读，于是画成别的角色甚至换性别。现在既写进生成指令，也由 _guard 在
+    代码层硬拼进最终提示词——成功、纠偏重写、失败回退三条路径都不遗漏。
     """
     instruction = prompts.build_image_compose_prompt(
         activity=activity,
@@ -264,9 +269,23 @@ async def compose_image_prompt(
         anchor_hint=anchor_hint,
         daylight_fact=daylight_fact,
         lighting_tags=lighting_tags,
+        character_name=character_name,
+        persona_prompt=persona_prompt,
     )
+
+    def _guard(text: str) -> str:
+        """画风标识 + 角色描写代码层硬拼（不依赖 LLM 自觉，也不依赖萌绘整理）。"""
+        return prompts.enforce_image_guard(
+            text,
+            art_style=art_style,
+            style=style,
+            language=language,
+            anchor=anchor_hint,
+            character_name=character_name,
+        )
+
     if instruction is None:
-        return activity, False
+        return _guard(activity), False
     now_dt = now or datetime.now()
 
     async def _ask(extra: str = "") -> str:
@@ -283,11 +302,11 @@ async def compose_image_prompt(
         composed = await _ask()
     except llm_mod.LLMError as exc:  # noqa: BLE001
         logger.warning("mine_chat: 出图提示词生成失败，回退日程原句: %s", exc)
-        return activity, False
+        return _guard(activity), False
     composed = composed.strip().strip('"').strip()
     if not composed:
         logger.warning("mine_chat: 出图提示词生成为空，回退日程原句")
-        return activity, False
+        return _guard(activity), False
 
     if time_guard:
         conflicts = daylight.find_time_conflicts(composed, now_dt)
@@ -313,7 +332,7 @@ async def compose_image_prompt(
                     "mine_chat: 出图提示词时段矛盾未修正（%s），仍按原稿出图",
                     "、".join(conflicts),
                 )
-    return composed, True
+    return _guard(composed), True
 
 
 async def fetch_anima_image(
@@ -324,13 +343,15 @@ async def fetch_anima_image(
     workflow: str = "",
     raw_prompt: bool = False,
     negative_prompt: str = "",
+    art_style: str = "anime",
 ) -> str | None:
     """联动 ComfyUI萌绘出一张图，返回服务器本地文件路径（失败返回 None）。
 
     prompt 通常是一句中文画面描述（由萌绘按工作流底模整理语种与风格）；
     raw_prompt=True 时 prompt 已是最终形态（英文标签），萌绘跳过二次整理。
     external=True 让萌绘「返回图片路径、由我方发图」（同时默认静默）；
-    event 用投递窗口最近一次真实用户消息事件（anima 侧必需）。
+    event 用投递窗口最近一次真实用户消息事件（anima 侧必需）；
+    art_style：按画风自动补齐负向排除词（anime 挡写实、realistic 挡动漫）。
     """
     handler = _resolve_draw_handler(context)
     if handler is None:
@@ -350,8 +371,12 @@ async def fetch_anima_image(
         kwargs["workflow"] = workflow.strip()
     if raw_prompt:
         kwargs["raw_prompt"] = True
-    if negative_prompt.strip():
-        kwargs["negative_prompt"] = negative_prompt.strip()
+    # v1.0.45：按画风补齐反向排除词。用户实测「配了动漫却画出真人」——光在正向
+    # 提示词里写 anime style 压不住底模/工作流的写实倾向，负向通道才是对的地方。
+    # 用户自己写的负向词原样保留，只补缺的、不重复。
+    merged_negative = prompts.merge_negative_prompt(art_style, negative_prompt)
+    if merged_negative.strip():
+        kwargs["negative_prompt"] = merged_negative.strip()
     try:
         result = await asyncio.wait_for(handler(event, **kwargs), timeout=ANIMA_DRAW_TIMEOUT)
     except asyncio.TimeoutError:

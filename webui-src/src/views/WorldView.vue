@@ -38,7 +38,7 @@
         </n-space>
       </n-card>
 
-      <n-card size="small" class="section" title="角色锚点（画面出镜角色本人时的外貌描述）">
+      <n-card size="small" class="section" title="角色锚点（角色本人外貌，强制写进出图提示词）">
         <n-space vertical size="large">
           <div>
             <div class="field-label">动漫画风</div>
@@ -59,8 +59,10 @@
             />
           </div>
           <n-text depth="3" style="font-size: 12px">
-            按当前「绘图画风」取用对应一套；只有画面出镜角色本人（自拍/入镜）时才会注入，
-            风景/物品等画面不使用。留空时自动从绑定知识库检索「角色形象」，都没有则不注入。
+            按当前「绘图画风」取用对应一套；每次出图都会强制写进最终提示词，用来锁定角色，
+            避免画成别人或换性别（建议把 1girl / 1boy 这类性别标签也写进去）。
+            留空时自动从绑定知识库检索「角色形象」，再没有就只靠人格设定与角色名锁定，
+            效果明显变弱——强烈建议填写。
           </n-text>
           <n-space>
             <n-button

@@ -752,6 +752,17 @@ class ProactiveService:
                 activity = "刚从睡梦中被手机震醒，睡眼惺忪、头发微乱、迷糊朦胧的神态"
             seed = str(info.get("seed") or "").strip()
             image_kind = random.choice(self._IMAGE_KINDS)
+            # v1.0.45：角色信息必须进出图链路。以前 persona_prompt 只走文案生成，
+            # 出图这条一次都没读，于是画面里的人经常变成别的角色甚至换性别。
+            character_name = ""
+            persona_prompt = ""
+            try:
+                character_name = str(
+                    self.resolver.persona_display_name(persona_id) or ""
+                ).strip()
+                persona_prompt = await self.resolver.persona_prompt(persona_id)
+            except Exception as exc:  # noqa: BLE001 - 拿不到人设不该挡住出图
+                logger.debug("mine_chat: 读取出图角色设定失败: %s", exc)
             final_prompt, raw_prompt = await compose_image_prompt(
                 self.context,
                 umo=str(info.get("umo") or "") or None,
@@ -771,6 +782,8 @@ class ProactiveService:
                 lighting_tags=daylight.lighting_tags(now_dt),
                 now=now_dt,
                 time_guard=settings.proactive_time_guard,
+                character_name=character_name,
+                persona_prompt=persona_prompt,
             )
             path = await fetch_anima_image(
                 self.context,
@@ -779,6 +792,7 @@ class ProactiveService:
                 workflow=settings.proactive_image_workflow,
                 raw_prompt=raw_prompt,
                 negative_prompt=settings.proactive_image_negative_prompt,
+                art_style=settings.proactive_image_art_style,
             )
             if not path:
                 await self._record(persona_id, "img", "img_fail", umo, throttle=True)

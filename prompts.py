@@ -375,10 +375,33 @@ _IMAGE_ART_TAGS = {
     "realistic": "photorealistic, realistic, masterpiece, best quality",
 }
 
+# v1.0.45：画风与角色是用户实测最容易丢的两项。原先只在指令里「要求模型注意」，
+# 模型经常不写；而成功时恒以 raw_prompt=True 交给萌绘（跳过它的二次整理），
+# 丢了就没人兜底。这里给死一组「必须原样出现」的标识，再由
+# proactive_gen.enforce_image_guard 在代码层补拼一次，双保险。
+_IMAGE_ART_LOCK_TAGS = {
+    "anime": "anime style, 2d illustration, anime screencap",
+    "realistic": "photorealistic, realistic, photograph",
+}
+_IMAGE_STYLE_PHRASE = {
+    ("anime", "zh"): "二次元动漫插画风格（anime style），非真人写实、非照片",
+    ("anime", "en"): "anime style 2D illustration, not photorealistic, not a photo",
+    ("realistic", "zh"): "真人写实摄影风格（photorealistic），真实照片质感，非动漫",
+    ("realistic", "en"): "photorealistic photograph, real life, not anime or illustration",
+}
+# 与画风相反的画风词：塞进负向提示词，是「配了动漫却画出真人」最有效的一层。
+_IMAGE_NEGATIVE_EXCLUDE = {
+    "anime": ("realistic", "photorealistic", "photo", "photograph", "3d render"),
+    "realistic": ("anime", "cartoon", "illustration", "2d", "painting"),
+}
+
 PROMPT_COMPOSE_TAGS = """根据下面的生活场景事实，写一行英文 Danbooru 标签形式的绘图提示词。
 要求：
 - 逗号分隔的小写标签短语，包含人物、动作、场景、时间氛围与情绪要素
 - 画风：{art_style_text}；画质词用：{quality_tags}
+- 必须原样包含这组画风标识：{art_lock}——缺一个都不合格，绝不许写成相反画风
+- 画面里若出现人物，必须严格是角色本人；性别、年龄感、发色、瞳色、发型不得改变，
+  不许画成别的角色、不许改变性别、不许画成路人
 - 画面的主体与动作必须**严格对应**下面的【此刻生活场景】，不许换成别的事情、
   不许添加没提到的人物/宠物/道具（这段描述还要拿去写配文，画偏了文字就跟不上）
 {time_rule}- 只输出这一行标签本身，不要解释、不要句号、不要 markdown
@@ -389,6 +412,9 @@ PROMPT_COMPOSE_NATURAL = """根据下面的生活场景事实，写一段绘图�
 要求：
 - 用{language_word}写一段连贯的画面描述，包含人物、动作、场景、时间氛围与情绪
 - 画风：{art_style_text}
+- 必须原样写出这组画风标识：{art_lock}——绝不许写成相反画风
+- 画面里若出现人物，必须严格是角色本人；性别、年龄感、发色、瞳色、发型不得改变，
+  不许画成别的角色、不许改变性别、不许画成路人
 - 画面的主体与动作必须**严格对应**下面的【此刻生活场景】，不许换成别的事情、
   不许添加没提到的人物/宠物/道具（这段描述还要拿去写配文，画偏了文字就跟不上）
 {time_rule}- 只输出提示词本身，单行，不要解释、不要引号
@@ -419,6 +445,92 @@ def image_art_quality_tags(art_style: str) -> str:
     )
 
 
+def normalize_art_style(art_style: str) -> str:
+    """画风只认 anime / realistic 两档，其余一律按动漫兜底。"""
+    return "realistic" if (art_style or "").strip().lower() == "realistic" else "anime"
+
+
+def image_art_lock_tags(art_style: str) -> str:
+    """给死的画风标签串（danbooru 模式用，写进指令并硬拼进最终提示词）。"""
+    return _IMAGE_ART_LOCK_TAGS[normalize_art_style(art_style)]
+
+
+def image_style_phrase(art_style: str, language: str) -> str:
+    """给死的画风短句（自然语言模式用，按提示词语种出中/英文）。"""
+    key = "en" if (language or "").strip().lower() == "en" else "zh"
+    return _IMAGE_STYLE_PHRASE[(normalize_art_style(art_style), key)]
+
+
+def merge_negative_prompt(art_style: str, existing: str = "") -> str:
+    """按画风补齐反向排除词（用户实测「设了动漫却画真人」的主要兜底）。
+
+    用户自己写的负向提示词优先保留，只补缺的、不覆盖、不重复。萌绘的
+    negative_prompt 是 SD 系标签通道，所以这里用英文 token，与提示词语种无关。
+    """
+    base = " ".join(str(existing or "").split()).strip(" ,，;；")
+    low = base.lower()
+    parts = [base] if base else []
+    for token in _IMAGE_NEGATIVE_EXCLUDE[normalize_art_style(art_style)]:
+        if token.lower() not in low:
+            parts.append(token)
+    return ", ".join(parts)
+
+
+def enforce_image_guard(
+    prompt: str,
+    *,
+    art_style: str = "anime",
+    style: str = "natural",
+    language: str = "zh",
+    anchor: str = "",
+    character_name: str = "",
+) -> str:
+    """把「画风标识 + 角色描写」硬拼进最终出图提示词（代码层，不靠模型自觉）。
+
+    原先画风与角色锚点只写进给 LLM 的指令里，模型经常不写；而 compose_image_prompt
+    成功时恒以 raw_prompt=True 交给萌绘（跳过二次整理），丢了就无人兜底，于是
+    「配了动漫画出真人」「画成别的角色甚至换性别」。本函数在全部返回路径
+    （成功 / 时段纠偏重写 / LLM 失败回退）统一调用，保证两项 100% 在提示词里。
+
+    纯函数、单行输出：danbooru 用逗号接标签，自然语言用一句风格短句 + 角色身份句；
+    已存在的标识按子串去重，不重复堆词。
+    """
+    base = " ".join(str(prompt or "").split())
+    low = base.lower()
+    art = normalize_art_style(art_style)
+    tags_mode = (style or "").strip().lower() == "danbooru"
+    en = (language or "").strip().lower() == "en"
+    anchor_clean = " ".join(str(anchor or "").split()).strip(" ,，;；")
+    name = " ".join(str(character_name or "").split())
+
+    add: list[str] = []
+    if tags_mode:
+        for token in _IMAGE_ART_LOCK_TAGS[art].split(","):
+            token = token.strip()
+            if token and token.lower() not in low:
+                add.append(token)
+        if anchor_clean and anchor_clean.lower() not in low:
+            add.append(anchor_clean)
+        if not base:
+            return ", ".join(add)
+        return ", ".join([base] + add) if add else base
+
+    phrase = image_style_phrase(art_style, language)
+    if phrase.lower() not in low:
+        add.append(phrase)
+    identity: list[str] = []
+    if name:
+        identity.append(f"the character is {name}" if en else f"角色本人：{name}")
+    if anchor_clean and anchor_clean.lower() not in low:
+        identity.append(anchor_clean)
+    if identity:
+        add.append("; ".join(identity) if en else "；".join(identity))
+    sep = ", " if en else "，"
+    if not base:
+        return sep.join(add)
+    return base + sep + sep.join(add) if add else base
+
+
 def build_image_compose_prompt(
     *,
     activity: str,
@@ -432,6 +544,8 @@ def build_image_compose_prompt(
     anchor_hint: str = "",
     daylight_fact: str = "",
     lighting_tags: str = "",
+    character_name: str = "",
+    persona_prompt: str = "",
 ) -> str | None:
     """生成「出图提示词生成」的 LLM 指令；无可用场景事实时返回 None。
 
@@ -442,6 +556,11 @@ def build_image_compose_prompt(
     now_text / daylight_fact / lighting_tags 三者一起构成「时间一致性」约束：
     时刻是事实，daylight_fact 是代码判定的时段硬约束块，lighting_tags 是允许
     出现的光照标签方向（由 daylight.py 产出）。三者任一为空则不注入对应段落。
+
+    v1.0.45：character_name / persona_prompt / anchor_hint 一起构成「角色锁」。
+    过去人设全文只走文案生成，出图这条链路一次都没读，导致画成别的角色甚至换性别；
+    且锚点是「当画面出现角色本人时」的条件式软指令，而 _IMAGE_KINDS 里 4/6 明确
+    画面无人物，逻辑上多数图根本不注入。现在改为无条件的硬事实块。
     """
     activity = (activity or "").strip()
     facts_lines = [f"【此刻生活场景】{activity or '日常生活的一个随意瞬间'}"]
@@ -457,10 +576,23 @@ def build_image_compose_prompt(
         )
     if (daylight_fact or "").strip():
         facts_lines.append((daylight_fact or "").strip())
+    if (persona_prompt or "").strip():
+        facts_lines.append(
+            "【角色设定】以下是角色本人的设定，只用来确定身份、性别、年龄感与外貌；"
+            "不要把说话风格、对话规则、回复格式写进画面：\n"
+            + " ".join((persona_prompt or "").split())[:1000]
+        )
+    name = (character_name or "").strip()
+    if name:
+        facts_lines.append(
+            f"【角色锁】画面里只要出现人物，就必须是角色本人「{name}」；"
+            "性别、年龄感、发色、瞳色、发型与服饰特征严格按设定，"
+            "不许画成别的角色、不许改变性别、不许画成路人。"
+        )
     if (anchor_hint or "").strip():
         facts_lines.append(
-            f"【角色锚点】当画面出现角色本人（自拍/出镜）时，必须严格使用以下外貌描述，"
-            f"不要自行发挥长相：{(anchor_hint or '').strip()}"
+            f"【角色锚点】以下是角色本人的外貌描写，必须原样写进输出的提示词里，"
+            f"不要改写、不要省略、不要自行发挥长相：{(anchor_hint or '').strip()}"
         )
     if (seed or "").strip():
         facts_lines.append(f"【可分享细节】{(seed or '').strip()}")
@@ -469,12 +601,14 @@ def build_image_compose_prompt(
     facts = "\n".join(facts_lines)
 
     tags = (lighting_tags or "").strip()
+    art_lock = image_art_lock_tags(art_style)
     if (style or "").strip().lower() == "danbooru":
         return fill(
             PROMPT_COMPOSE_TAGS,
             {
                 "art_style_text": image_art_text(art_style),
                 "quality_tags": image_art_quality_tags(art_style),
+                "art_lock": art_lock,
                 "time_rule": _TIME_RULE_TAGS.format(tags=tags) if tags else "",
                 "facts": facts,
             },
@@ -484,6 +618,7 @@ def build_image_compose_prompt(
         {
             "art_style_text": image_art_text(art_style),
             "language_word": "英文" if (language or "").strip().lower() == "en" else "中文",
+            "art_lock": image_style_phrase(art_style, language),
             "time_rule": _TIME_RULE_NATURAL.format(tags=tags) if tags else "",
             "facts": facts,
         },
