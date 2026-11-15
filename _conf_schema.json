@@ -416,7 +416,7 @@
       },
       "voice_enabled": {
         "description": "主动消息可以发语音",
-        "hint": "联动 CosyVoice3（astrbot_plugin_cosyvoice）：偶尔真的「开口说一句」。未安装 / 未启用 / 没有可用音色 / 服务端冷却中时自动跳过，文字照发。语音与配图、表情互斥——同一条消息只承载一种媒体，图和表情优先。",
+        "hint": "联动 CosyVoice3（astrbot_plugin_cosyvoice）：偶尔真的「开口说一句」。未安装 / 未启用 / 没有可用音色 / 服务端冷却中时自动跳过，文字照发。语音与配图、表情**互不影响**（各自独立掷骰），「文字 + 图 + 语音」可以同时出现。",
         "type": "bool",
         "default": false
       },
@@ -445,12 +445,6 @@
         "options": ["append", "replace"],
         "labels": ["文字 + 语音", "只发语音（失败补文字）"],
         "default": "append"
-      },
-      "voice_with_media": {
-        "description": "配图/表情时不放弃语音",
-        "hint": "默认关闭：一条消息只承载一种媒体，配图或表情命中时语音让位（裁决日志记 voice_yield），所以「配图概率 25%」会吃掉四分之一的语音机会。打开后允许「文字 + 图 + 语音」同时出现，更适合想常听到声音的场景；仅对「文字 + 语音」模式生效（只发语音模式下配图仍优先）。",
-        "type": "bool",
-        "default": false
       },
       "use_affinity": {
         "description": "参考好感度关系层",

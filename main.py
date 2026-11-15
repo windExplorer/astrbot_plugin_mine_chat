@@ -615,7 +615,8 @@ class MineChatPlugin(Star):
             "voice_dice": "语音掷骰未命中",
             "voice_limit": "今日语音已达上限",
             "voice_no_api": "CosyVoice 不可用（未安装/未启用/没有可用音色/服务端冷却中）",
-            "voice_yield": "语音让位给了配图或表情（一条消息只承载一种媒体）",
+            "voice_yield": "语音让位给了配图或表情（v1.2.3 起两者不再互斥，"
+            "这条只出现在旧日志里）",
             "voice_fallback": "语音合成或发送失败，已降级为文字",
             # 上下文连贯
             "archive_failed": "主动消息写入对话历史失败——已由每轮上下文回填兜住，"

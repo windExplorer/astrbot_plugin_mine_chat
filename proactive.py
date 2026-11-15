@@ -546,34 +546,19 @@ class ProactiveService:
                     throttle=True,
                 )
 
-        # 语音通道：与图/表情互斥（一条消息只承载一种媒体）。已经命中图或表情时
-        # 语音让位且不消耗当日计数，理由同「一条消息只附一张图」。
+        # 语音通道：与配图/表情**互不影响**（v1.2.3 起）。
+        # 曾经做成「一条消息只承载一种媒体」，图命中就让语音让位（voice_yield）——
+        # 那是审美判断，不是技术限制：语音是一条独立的 Record 消息，和图各走各的，
+        # 图 + 文字 + 语音同时出现完全正常。那次让位等于白白浪费一半的语音机会。
         voice_plan: dict[str, Any] | None = None
-        media_present = image_plan is not None or bool(sticker_path) or bool(sticker_url)
-        # 共存只在 append 模式下有意义：replace 会省掉文字，再带图就只剩一张
-        # 没有上下文的图，读者不知道她在说什么。
-        allow_coexist = bool(
-            settings.proactive_voice_with_media
-            and settings.proactive_voice_mode == "append"
+        voice_plan, _voice_hit, _voice_note = await self._plan_voice(
+            persona_id, settings, state
         )
-        if media_present and not allow_coexist:
-            # 以前这里只记一条光秃秃的 voice_yield，用户无法判断「是图抢了」
-            # 还是「语音开关其实没开」——这两种情况在裁决日志里长得一模一样。
-            # 现在把「谁占了这条」与「语音侧为什么不参与」一起写进内容列。
-            media = "配图" if image_plan is not None else "表情"
-            if not settings.proactive_voice_enabled or settings.proactive_voice_probability <= 0:
-                yield_note = f"{media}占用了本条；语音开关未开启或概率为 0"
-            elif not bridge_mod.voice_available(self.context):
-                yield_note = f"{media}占用了本条；CosyVoice 当前不可用（未启用/无音色/冷却中）"
-            else:
-                yield_note = f"{media}占用了本条（语音与图/表情互斥，本条不掷语音骰）"
-            await self._record(
-                persona_id, "voice", "voice_yield", umo, content=yield_note, throttle=True
-            )
-        else:
-            voice_plan, _voice_hit, _voice_note = await self._plan_voice(
-                persona_id, settings, state
-            )
+        media_present = image_plan is not None or bool(sticker_path) or bool(sticker_url)
+        if media_present and voice_plan and voice_plan.get("mode") == "replace":
+            # replace = 只发语音、不发文字；但本条还有图，图不能跟着文字一起消失，
+            # 所以就地降级为 append（文字 + 图 + 语音）。
+            voice_plan = {**voice_plan, "mode": "append"}
 
         # 手动/force 发送撞上睡眠时段时的场景一致性：
         # 角色是「刚被手机震醒」在发消息——文字要迷糊，图也要是刚醒的样子
