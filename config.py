@@ -242,6 +242,10 @@ class Settings:
     proactive_voice_name: str = ""
     # append = 文字照发、后面补一条语音；replace = 最后一条文字改成语音（失败会补回文字）
     proactive_voice_mode: str = "append"
+    # 语音与配图/表情默认互斥（一条消息只承载一种媒体）。开启后允许「文字 + 图 + 语音」
+    # 同时出现，代价是那条消息会比较满；仅在 append 模式下有意义（replace 会把文字省掉，
+    # 再带图就只剩一张没有上下文的图）。
+    proactive_voice_with_media: bool = False
 
     # 好感度中枢（萌萌好感度 affinity.v1）只读联动
     proactive_use_affinity: bool = True
@@ -562,6 +566,9 @@ class Settings:
                 ).lower()
                 == "replace"
                 else "append"
+            ),
+            proactive_voice_with_media=to_bool(
+                pick(proactive, "voice_with_media", "proactive_voice_with_media", False), False
             ),
             proactive_use_affinity=to_bool(
                 pick(proactive, "use_affinity", "proactive_use_affinity", True), True
