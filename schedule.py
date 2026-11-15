@@ -20,6 +20,7 @@ from . import bridge as bridge_mod
 from . import bus as bus_mod
 from . import daylight
 from . import kb as kb_mod
+from . import life as life_mod
 from . import llm as llm_mod
 from . import prompts
 from .config import Settings, fmt_hhmm, parse_hhmm
@@ -465,36 +466,91 @@ def daily_routine(sleep_start_min: int, sleep_end_min: int, rng: random.Random) 
 # 除了日期、作息浮动和「请避免重复」，每天喂进去的东西完全一样，模型只能
 # 按同一个套路写。这里用确定性随机（seed = persona + 日期）给每天发一份
 # 「基调 + 主线」，同一天多次重试结果稳定，跨天一定不同。
-_PACE_TIERS: tuple[tuple[float, str, str], ...] = (
-    (0.36, "平常的一天", "节奏与平时一样：按部就班，没有特别的事，也没有特别的麻烦。"),
-    (0.18, "慢半拍的一天", "起得比平时更晚、动作更慢；效率偏低，愿意在人少的地方多待一会儿。"),
-    (0.16, "有点忙乱的一天", "临时多出几件事要处理，时间被反复打断，中间会有一点手忙脚乱。"),
-    (0.15, "出门走动的一天", "有一段像样的外出（办事 / 采购 / 见人 / 走远一点），路上占掉不少时间。"),
-    (0.15, "几乎不出门的一天", "一整天没离开住处附近，活动范围很小，时间感偏淡。"),
+_PACE_TIERS: tuple[tuple[float, str, str, str], ...] = (
+    (0.34, "平常的一天", "normal", "节奏与平时一样：按部就班，没有特别的事，也没有特别的麻烦。"),
+    (0.18, "慢半拍的一天", "slow", "起得比平时更晚、动作更慢；效率偏低，愿意在人少的地方多待一会儿。"),
+    (0.16, "有点忙乱的一天", "chaotic", "临时多出几件事要处理，时间被反复打断，中间会有一点手忙脚乱。"),
+    (0.16, "出门走动的一天", "out", "有一段像样的外出（办事 / 采购 / 见人 / 走远一点），路上占掉不少时间。"),
+    (0.16, "几乎不出门的一天", "indoor", "一整天没离开住处附近，活动范围很小，时间感偏淡。"),
 )
 
-# 主线池：都是「独居 / 学生 / 上班 / 自由职业」都成立的生活小事。
-# 刻意不写具体地名与人名——角色细节由人设与喜好补，这里只提供「今天有什么不同」。
-_THEME_POOL: tuple[str, ...] = (
-    "把一件拖了很久的小事做完（修东西 / 整理 / 归还 / 补上一直没做的事）",
-    "某样日常用品用完了，出门补货，顺路去了一趟平时不去的地方",
-    "天气变化打乱了原计划，临时改成待在屋里",
-    "收到一件意外的东西（快递 / 邻居给的食物 / 久未联系的人的消息），心情因此有点变化",
-    "半夜没睡着，起来做了点事，第二天因此晚了",
-    "试着自己做一样没做过的吃的，过程比预想的麻烦",
-    "整理旧物时翻到某样东西，停下来看了很久",
-    "住处附近短暂地很吵（施工 / 搬家 / 有人聚会），只好换个地方待着",
-    "遇到一只不太怕人的动物，因此多逗留了一段时间",
-    "把某个坏掉的小东西修好了，或者确认修不好、决定换掉",
-    "身体不太舒服（头痛 / 胃 / 睡太少），一整天都调低了强度",
-    "被一件很小的好事影响，心情比平时轻一点",
-    "为了一个不重要的决定纠结了很久（穿什么 / 吃什么 / 要不要出门）",
-    "把房间彻底收拾了一遍，扔掉一批不用的东西",
-    "临时被拜托一件事，不太情愿但还是做了",
-    "走了一条平时不走的路，发现了一处以前没注意过的角落",
-    "读到或看到某个东西，反复想了很久",
-    "准备的量做多了（饭菜 / 收拾 / 提前量），多出来一份",
+# 主线池：(类别, 描述)。类别用于跨天轮换——最近三天用过同类就不再给，
+# 否则「整理房间」「做饭翻车」会隔天循环，看起来还是千篇一律。
+# 都是「独居 / 学生 / 上班 / 自由职业」都成立的生活小事；不写具体地名与人名。
+# 刻意留了大量「没做成 / 白忙一场 / 被小事绊住」的选项：完美的效率日程没有生活感。
+_THEME_POOL: tuple[tuple[str, str], ...] = (
+    # 意外：外部世界打乱计划
+    ("意外", "天气变化打乱了原计划，临时改成待在屋里"),
+    ("意外", "住处附近短暂地很吵（施工 / 搬家 / 有人聚会），只好换个地方待着"),
+    ("意外", "收到一件不属于自己的快递，折腾了一圈才处理掉"),
+    ("意外", "常用的东西突然坏了（灯泡 / 水管 / 充电线），临时想办法应付"),
+    ("意外", "遇到一只不太怕人的动物，因此多逗留了一段时间"),
+    ("意外", "楼下或隔壁在换东西，一整天断断续续有动静"),
+    ("意外", "原定的安排被取消，多出一段没计划的时间，反而不知道做什么"),
+    # 家务：把生活摆平
+    ("家务", "把一件拖了很久的小事做完（修东西 / 整理 / 归还 / 补上一直没做的事）"),
+    ("家务", "把房间彻底收拾了一遍，扔掉一批不用的东西"),
+    ("家务", "某样日常用品用完了，出门补货，顺路去了一趟平时不去的地方"),
+    ("家务", "洗了一大批东西，晾起来的时候发现架子不够用"),
+    ("家务", "把某个坏掉的小东西修好了，或者确认修不好、决定换掉"),
+    ("家务", "找一样明明记得放在某处的东西，翻了半天没找到"),
+    ("家务", "准备的量做多了（饭菜 / 收拾 / 提前量），多出来一份"),
+    # 身体：状态管理
+    ("身体", "身体不太舒服（头痛 / 胃 / 睡太少），一整天都调低了强度"),
+    ("身体", "半夜没睡着，起来做了点事，第二天因此晚了"),
+    ("身体", "洗了个很长的热水澡，出来之后整个人松下来"),
+    ("身体", "肩颈不舒服，中途几次停下来活动一下"),
+    ("身体", "睡得比平时沉，醒来时已经比预定晚了很多"),
+    ("身体", "冷得手脚发凉，想办法把自己弄暖（热水 / 厚袜子 / 缩在被子里）"),
+    # 外出：和外面打交道
+    ("外出", "走了一条平时不走的路，发现了一处以前没注意过的角落"),
+    ("外出", "去办一件必须本人到场的事，排队比预想久"),
+    ("外出", "出门忘了带一样东西，半路折回去拿"),
+    ("外出", "去了趟离住处有点远的地方，只为买一样东西"),
+    ("外出", "路上被一阵风或一场雨弄得有点狼狈，就近躲了一会儿"),
+    ("外出", "临时起意拐进一家没进过的店，待了比计划久"),
+    # 休闲：不为效率的时间
+    ("休闲", "整理旧物时翻到某样东西，停下来看了很久"),
+    ("休闲", "读到或看到某个东西，反复想了很久"),
+    ("休闲", "一整个下午什么都没做，只是换了几个地方待着"),
+    ("休闲", "把喜欢的东西重新翻了一遍（书 / 剧 / 歌 / 照片）"),
+    ("休闲", "在窗边坐了很久，看着外面的天色一点点变"),
+    ("休闲", "试着自己做一样没做过的吃的，过程比预想的麻烦"),
+    ("休闲", "本来只想歇十分钟，结果过去了两个小时"),
+    ("休闲", "对着某个东西发了很久的呆，回神时天已经暗了"),
+    # 情绪：被小事推动
+    ("情绪", "被一件很小的好事影响，心情比平时轻一点"),
+    ("情绪", "为了一个不重要的决定纠结了很久（穿什么 / 吃什么 / 要不要出门）"),
+    ("情绪", "想起一件很久以前的事，情绪低了一小段时间"),
+    ("情绪", "被一句无心的话弄得不太舒服，反复想了几次"),
+    ("情绪", "做了一件计划外的事，之后有点后悔，也有点释然"),
+    ("情绪", "看什么都不太顺，中间几次想干脆什么都不做"),
 )
+
+
+_STATE_NOTE_MAX = 4
+
+
+def _clean_state_notes(raw: Any) -> list[str]:
+    """把模型自报的 state_after 洗成 0~4 条短句。
+
+    为什么需要它：跨天连续性只能靠模型自己交代「今天结束时还留着什么状态」
+    （感冒没好、菜还剩半颗、东西还没修）。这里只做清洗与截断——
+    不猜、不推断，模型没给就是没有，绝不替它编状态。
+    """
+    if isinstance(raw, str):
+        raw = re.split(r"[；;\n]+", raw)
+    if not isinstance(raw, list):
+        return []
+    notes: list[str] = []
+    for entry in raw:
+        text = " ".join(str(entry or "").split())
+        if len(text) < 2:
+            continue
+        notes.append(text[:40])
+        if len(notes) >= _STATE_NOTE_MAX:
+            break
+    return notes
 
 
 def daily_flavor(
@@ -502,30 +558,46 @@ def daily_flavor(
     plan_date: str,
     likes: list[str] | None = None,
     dislikes: list[str] | None = None,
+    recent_theme_categories: list[str] | None = None,
 ) -> dict[str, Any]:
     """当天「基调 + 小主线 + 会出现的喜好物 + 要避开的雷区」。
 
     确定性随机：同一天多次生成（含质量重试）拿到的是同一份 flavour，
     提示词不会在重试之间漂移；换一天必然换一套。
+
+    recent_theme_categories（最近几天用过的主线类别）：用于轮换，
+    避免「整理房间 / 做饭翻车」隔天循环。排除后池子空了就退回全池。
     """
     rng = random.Random(f"flavor:{persona_id}:{plan_date}")
     pace_name = _PACE_TIERS[0][1]
-    pace_desc = _PACE_TIERS[0][2]
+    pace_kind = _PACE_TIERS[0][2]
+    pace_desc = _PACE_TIERS[0][3]
     roll = rng.random()
     acc = 0.0
-    for probability, name, desc in _PACE_TIERS:
+    for probability, name, kind, desc in _PACE_TIERS:
         acc += probability
         if roll < acc:
-            pace_name, pace_desc = name, desc
+            pace_name, pace_kind, pace_desc = name, kind, desc
             break
-    theme = rng.choice(_THEME_POOL)
+
+    used = {str(item) for item in (recent_theme_categories or [])}
+    pool = [entry for entry in _THEME_POOL if entry[0] not in used] or list(_THEME_POOL)
+    theme_category, theme = rng.choice(pool)
+
     # 喜好物每次取 2~3 项：太少没有画面感，太多会让模型把每个都塞进去
-    pool = [item for item in (likes or []) if item]
-    life_items = rng.sample(pool, min(len(pool), rng.randint(2, 3))) if pool else []
+    items_pool = [item for item in (likes or []) if item]
+    life_items = (
+        rng.sample(items_pool, min(len(items_pool), rng.randint(2, 3)))
+        if items_pool
+        else []
+    )
     avoid = [item for item in (dislikes or []) if item][:4]
     return {
         "pace": f"{pace_name}——{pace_desc}",
+        "pace_name": pace_name,
+        "pace_kind": pace_kind,
         "theme": theme,
+        "theme_category": theme_category,
         "life_items": life_items,
         "avoid_items": avoid,
     }
@@ -644,10 +716,17 @@ class ScheduleService:
             settings.schedule_sleep_end_min,
             random.Random(f"routine:{persona_id}:{plan_date}"),
         )
+        # 当天上下文（天气/基调/遗留状态）只算一次：提示词与矛盾校验必须看同一份，
+        # 重试之间也不能漂移，否则「改掉了这一条又冒出另一条」会无限循环。
+        ctx = await self._plan_context(persona_id, plan_date, settings)
+        # 矛盾类问题最多纠正一次：life.scan 是启发式词表，宁可漏报也不能让
+        # 一次误报把整份日程拖去兜底模板（那比一条矛盾难看得多）。
+        logic_retry_used = 0
+        state_after: list[str] = []
 
         for attempt in range(0, max(0, settings.schedule_max_retry) + 1):
             prompt = await self._build_prompt(
-                persona_id, plan_date, hint=last_problem, routine=routine
+                persona_id, plan_date, hint=last_problem, routine=routine, ctx=ctx
             )
             system = (
                 settings.prompt_plan_override.strip()
@@ -678,6 +757,11 @@ class ScheduleService:
             raw_items = payload.get("schedule") if isinstance(payload, dict) else payload
             items = normalize_items(raw_items)
             issues, quality = validate_items(items, settings, month=plan_target.month)
+            # 模型自报的「今天结束时留下的状态」（0~3 条短句），明天会作为
+            # 「延续下来的状态」喂回去——这是跨天连续性的唯一来源。
+            state_after = _clean_state_notes(
+                payload.get("state_after") if isinstance(payload, dict) else None
+            )
 
             if not items:
                 last_problem = prompts.plan_retry_hint("format")
@@ -693,6 +777,38 @@ class ScheduleService:
                 )
                 final_source = "llm_retry"
                 continue
+            # 前后矛盾（反季 / 天气冲突 / 睡眠时段清醒 / 基调与外出冲突 / 状态断线）
+            # 与「今天必须覆盖的生活面」缺失。最多纠正一次：见上面的 logic_retry_used。
+            logic_problems = life_mod.scan(
+                items,
+                month=plan_target.month,
+                weather_kind=ctx["weather"].kind,
+                pace_kind=ctx["flavor"]["pace_kind"],
+                sleep_start_min=int(routine["sleep_start"]),
+                sleep_end_min=int(routine["sleep_end"]),
+                status_notes=ctx["status_notes"],
+            )
+            missing = life_mod.missing_categories(items, ctx["required_categories"])
+            if missing:
+                logic_problems.append(
+                    f"今天缺少「{'、'.join(missing)}」方面的具体条目（要求覆盖的生活面）"
+                )
+            if logic_problems:
+                issues.append("logic")
+                if logic_retry_used < 1:
+                    logic_retry_used += 1
+                    last_problem = prompts.plan_retry_hint(
+                        "logic", "；".join(logic_problems[:4])
+                    )
+                    final_source = "llm_retry"
+                    continue
+                # 已经纠正过一次还是不合格：接受这份日程，只扣分留痕。
+                # 宁可留一条轻微矛盾，也不要把整天的日程换成通用兜底模板。
+                quality = max(0.0, quality - 8.0)
+                logger.info(
+                    "mine_chat: 日程仍有轻微逻辑问题，已接受（不再重试）: %s",
+                    "；".join(logic_problems[:3]),
+                )
             recent = await self._recent_activities(persona_id, plan_date, settings)
             recent_activities = [row["activity"] for row in recent]
             if detect_repetition(items, recent_activities):
@@ -725,6 +841,22 @@ class ScheduleService:
         retry_after = (
             time.time() + RETRY_BACKOFF_SECONDS if final_source in {"fallback", "llm_retry"} else None
         )
+        # meta 是「跨天」的唯一载体：明天靠它轮换主线类别、
+        # 并把今天留下的状态（感冒没好 / 菜还剩）继续喂给模型。
+        meta = {
+            "flavor": {
+                "pace_name": ctx["flavor"].get("pace_name"),
+                "pace_kind": ctx["flavor"].get("pace_kind"),
+                "theme": ctx["flavor"].get("theme"),
+                "theme_category": ctx["flavor"].get("theme_category"),
+            },
+            "weather": {
+                "kind": ctx["weather"].kind,
+                "label": ctx["weather"].label,
+            },
+            "required_categories": ctx["required_categories"],
+            "status_after": state_after,
+        }
         await self.store.save_plan(
             persona_id=persona_id,
             plan_date=plan_date,
@@ -734,6 +866,7 @@ class ScheduleService:
             note=",".join(issues),
             raw_json=raw_text[:20000],
             retry_after=retry_after,
+            meta=meta,
         )
         bus_mod.notify()  # 日程生成完成 → 控制台立刻刷新
         logger.info(
@@ -882,6 +1015,85 @@ class ScheduleService:
         """清掉内存里的提取缓存（换绑知识库后让下次生成走重新提炼）。"""
         self._profile_memo.pop(persona_id, None)
 
+    async def _plan_context(
+        self, persona_id: str, plan_date: str, settings: Settings
+    ) -> dict[str, Any]:
+        """一次取齐「生成 + 校验」都要用的当天上下文。
+
+        为什么要抽出来：提示词生成与矛盾扫描必须看到**同一份**天气/基调/遗留状态，
+        否则会出现「提示词说下雪、校验说晴天」这种自相矛盾。同一天多次重试也共用
+        这份上下文（确定性随机），提示词不会在重试之间漂移。
+        """
+        raw_persona = await self.resolver.persona_prompt(persona_id)
+        # v1.1.0：不再粗暴截前 3000 字（那份长提示词里前 3000 字有一半是
+        # 「消息发送设定 / 格式铁律 / 关系解锁」这类对话规则，恰好把
+        # 【作息】【喜好】【雷区】【小习惯】挤在门外）。改为按段落挑「生活向」
+        # 内容，并把【喜好】【雷区】单独抽成素材喂给当天的主线。
+        profile = prompts.extract_life_profile(raw_persona)
+        likes, dislikes = prompts.extract_preferences(raw_persona)
+
+        # 最近几天的 meta：主线类别（轮换）与遗留状态（延续）
+        recent_meta: list[dict[str, Any]] = []
+        try:
+            recent_meta = await self.store.list_recent_plan_meta(persona_id, plan_date, 3)
+        except Exception as exc:  # noqa: BLE001 - 读不到就退化成「没有历史」
+            logger.debug("mine_chat: 读取最近日程 meta 失败: %s", exc)
+
+        recent_theme_categories: list[str] = []
+        recent_required: list[str] = []
+        status_notes: list[str] = []
+        for item in recent_meta:
+            flavor_part = item.get("flavor")
+            if isinstance(flavor_part, dict):
+                category = str(flavor_part.get("theme_category") or "")
+                if category and category not in recent_theme_categories:
+                    recent_theme_categories.append(category)
+            for name in item.get("required_categories") or []:
+                name = str(name)
+                if name and name not in recent_required:
+                    recent_required.append(name)
+            for note in item.get("status_after") or []:
+                note = str(note).strip()[:40]
+                if note and note not in status_notes:
+                    status_notes.append(note)
+
+        flavor = daily_flavor(
+            persona_id, plan_date, likes, dislikes, recent_theme_categories
+        )
+        weather = life_mod.weather_for(
+            persona_id, plan_date, life_mod.region_of(profile)
+        )
+        required = life_mod.pick_required_categories(
+            persona_id, plan_date, recent_required
+        )
+        # 基调与「必须覆盖的生活面」不能打架：不许要求一整天不出门的人必须出门
+        if flavor["pace_kind"] == "indoor":
+            required = [name for name in required if name != "外出"] or ["休闲"]
+        elif flavor["pace_kind"] == "out" and "外出" not in required:
+            required.append("外出")
+
+        relation_block = ""
+        if settings.schedule_use_affinity:
+            relation_block = await self._relation_block(persona_id)
+
+        try:
+            month = int(str(plan_date).split("-")[1])
+        except (IndexError, ValueError):
+            month = date_cls.today().month
+
+        return {
+            "profile": profile,
+            "likes": likes,
+            "dislikes": dislikes,
+            "flavor": flavor,
+            "weather": weather,
+            "season_line": life_mod.season_line(month),
+            "month": month,
+            "required_categories": required,
+            "status_notes": status_notes[:4],
+            "relation_block": relation_block,
+        }
+
     async def _build_prompt(
         self,
         persona_id: str,
@@ -889,19 +1101,14 @@ class ScheduleService:
         *,
         hint: str = "",
         routine: dict[str, Any] | None = None,
+        ctx: dict[str, Any] | None = None,
     ) -> str:
         settings = self._settings_getter()
-        raw_persona = await self.resolver.persona_prompt(persona_id)
-        # v1.1.0：不再粗暴截前 3000 字（那份长提示词里前 3000 字有一半是
-        # 「消息发送设定 / 格式铁律 / 关系解锁」这类对话规则，恰好把
-        # 【作息】【喜好】【雷区】【小习惯】挤在门外）。改为按段落挑「生活向」
-        # 内容，并把【喜好】【雷区】单独抽成素材喂给当天的主线。
-        persona_prompt = prompts.extract_life_profile(raw_persona)
-        likes, dislikes = prompts.extract_preferences(raw_persona)
-        flavor = daily_flavor(persona_id, plan_date, likes, dislikes)
-        relation_block = ""
-        if settings.schedule_use_affinity:
-            relation_block = await self._relation_block(persona_id)
+        if ctx is None:
+            ctx = await self._plan_context(persona_id, plan_date, settings)
+        persona_prompt = ctx["profile"]
+        flavor = ctx["flavor"]
+        relation_block = ctx["relation_block"]
 
         try:
             target = datetime.strptime(plan_date, "%Y-%m-%d").date()
@@ -962,6 +1169,10 @@ class ScheduleService:
             life_items=flavor["life_items"],
             avoid_items=flavor["avoid_items"],
             relation_block=relation_block,
+            season_line=ctx["season_line"],
+            weather_line=ctx["weather"].line(),
+            required_categories=ctx["required_categories"],
+            status_notes=ctx["status_notes"],
         )
         if hint:
             body = f"{body}\n\n【上一次重做原因】\n{hint}\n"
@@ -1050,6 +1261,15 @@ class ScheduleService:
     def plan_to_json(self, plan: dict[str, Any] | None) -> dict[str, Any] | None:
         if not plan:
             return None
+        meta: dict[str, Any] = {}
+        raw_meta = plan.get("meta_json")
+        if isinstance(raw_meta, str) and raw_meta.strip():
+            try:
+                parsed = json.loads(raw_meta)
+                if isinstance(parsed, dict):
+                    meta = parsed
+            except (TypeError, ValueError):
+                meta = {}
         return {
             "persona_id": plan.get("persona_id"),
             "plan_date": plan.get("plan_date"),
@@ -1057,6 +1277,9 @@ class ScheduleService:
             "quality": plan.get("quality"),
             "note": plan.get("note"),
             "generated_at": plan.get("generated_at"),
+            # 当天基调/天气/主线类别/遗留状态：控制台据此显示「今天是个什么日子」，
+            # 也便于用户核对「为什么今天写得这么平」。
+            "meta": meta,
             "items": [
                 {
                     "id": item.get("id"),

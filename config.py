@@ -170,8 +170,10 @@ class Settings:
     # 日程
     schedule_enabled: bool = True
     schedule_time_min: int = 7 * 60 + 30
-    schedule_item_min: int = 6
-    schedule_item_max: int = 14
+    # 6 条一天 = 每条约 4 小时，写出来必然只剩「起床/吃饭/工作/吃饭/睡觉」，
+    # 这是「日程无聊」最直接的原因之一（v1.2.0 从 6 提到 10）。
+    schedule_item_min: int = 10
+    schedule_item_max: int = 18
     schedule_sleep_start_min: int = 23 * 60 + 30
     schedule_sleep_end_min: int = 7 * 60 + 30
     schedule_allow_night_owl: bool = False
@@ -279,8 +281,8 @@ class Settings:
             value = get(legacy_key)
             return default if value is None else value
 
-        item_min = to_int(pick(schedule, "item_min", "schedule_item_min", 6), 6, 2, 24)
-        item_max = to_int(pick(schedule, "item_max", "schedule_item_max", 14), 14, 2, 48)
+        item_min = to_int(pick(schedule, "item_min", "schedule_item_min", 10), 10, 2, 24)
+        item_max = to_int(pick(schedule, "item_max", "schedule_item_max", 18), 18, 2, 48)
         if item_max < item_min:
             item_max = item_min
 

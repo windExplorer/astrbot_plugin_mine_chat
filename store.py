@@ -14,7 +14,7 @@ import json
 import time
 from typing import Any, Callable, Iterable, Sequence
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # 只做「加列」这类幂等迁移；新装的库 DDL 已含新列，重复 ALTER 报错时忽略。
 _MIGRATIONS: tuple[str, ...] = (
@@ -25,6 +25,9 @@ _MIGRATIONS: tuple[str, ...] = (
     # v1.1.0：语音通道（CosyVoice 联动）独立计数，与图/表情分开限流
     "ALTER TABLE proactive_state ADD COLUMN voices_today INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE proactive_state ADD COLUMN voices_date TEXT",
+    # v1.2.0：日程元信息（当天基调/天气/主线类别 + 结束时留下的状态），
+    # 用于「跨天轮换」与「状态延续」（昨天感冒今天必须交代）
+    "ALTER TABLE daily_plan ADD COLUMN meta_json TEXT",
 )
 
 _DDL: tuple[str, ...] = (
@@ -71,6 +74,7 @@ _DDL: tuple[str, ...] = (
         quality      REAL,
         note         TEXT,
         raw_json     TEXT,
+        meta_json    TEXT,
         PRIMARY KEY (persona_id, plan_date)
     )
     """,
@@ -452,6 +456,37 @@ class Store:
         )
         return rows[0] if rows else None
 
+    async def list_recent_plan_meta(
+        self, persona_id: str, before_date: str, days: int = 3
+    ) -> list[dict[str, Any]]:
+        """取 before_date 之前最近几天的 meta（新→旧）。
+
+        用于两件跨天的事：主线类别轮换（别连着几天都写「整理房间」）、
+        以及状态延续（昨天感冒今天必须交代）。解析失败的行直接跳过，
+        不能让一条坏 JSON 把整天的生成挡住。
+        """
+        rows = await self._run(
+            self._query_sync,
+            "SELECT plan_date, meta_json FROM daily_plan"
+            " WHERE persona_id=? AND plan_date<? AND meta_json IS NOT NULL"
+            " ORDER BY plan_date DESC LIMIT ?",
+            (persona_id, before_date, max(1, int(days))),
+        )
+        result: list[dict[str, Any]] = []
+        for row in rows or []:
+            raw = row.get("meta_json")
+            if not raw:
+                continue
+            try:
+                meta = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(meta, dict):
+                continue
+            meta["plan_date"] = str(row.get("plan_date") or "")
+            result.append(meta)
+        return result
+
     async def save_plan(
         self,
         persona_id: str,
@@ -462,6 +497,7 @@ class Store:
         note: str = "",
         raw_json: str | None = None,
         retry_after: float | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         await self._run(
             self._save_plan_sync,
@@ -473,6 +509,7 @@ class Store:
             note,
             raw_json,
             retry_after,
+            meta,
         )
 
     def _save_plan_sync(
@@ -485,6 +522,7 @@ class Store:
         note: str,
         raw_json: str | None,
         retry_after: float | None,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         now = time.time()
         conn = self._connect()
@@ -500,8 +538,8 @@ class Store:
             conn.execute(
                 """
                 INSERT INTO daily_plan(persona_id, plan_date, generated_at, source,
-                                       retry_after, quality, note, raw_json)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                                       retry_after, quality, note, raw_json, meta_json)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     persona_id,
@@ -512,6 +550,7 @@ class Store:
                     quality,
                     note,
                     raw_json,
+                    json.dumps(meta, ensure_ascii=False) if meta else None,
                 ),
             )
             conn.executemany(

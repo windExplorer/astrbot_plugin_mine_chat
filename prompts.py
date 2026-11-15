@@ -216,15 +216,26 @@ PLAN_SYSTEM = """你是一个生活日程生成器，负责为指定角色安排
    入睡时段（含跨午夜，如 time="23:30"、end="07:10" 的「睡觉」）也必须是一条条目。
    条目按时间先后排列，不得重叠、不得倒序、不得出现时间倒流。
 4. 每条都要写具体、可感、有画面的事，不要写「休息」「学习」「工作」这类空洞词。
+   **不要写成效率清单**：允许拖延、走神、白忙一场、临时改主意——真实的日常本来就不整齐。
 5. 工作日、周末、节假日的节奏必须明显不同；不要每天都一样——尤其是一日三餐，
    不能顿顿重复同一家店、同一种食物（外卖/食堂/某道菜连着吃好几天是最容易被用户抓包的）。
 6. message_seed 是「这件事里值得随口跟人提一句的具体细节」，例如「楼下便利店关东煮打折，买了两串」。
    如果这个时间段不适合被打扰（睡觉、重要会议、专注赶工），message_seed 必须填空字符串 ""。
 7. 不要出现真实政治人物、现实名人、违法或色情内容；不要编造角色设定之外的人际关系。
 8. 只输出 JSON，不要任何解释文字，不要 markdown 代码块。
+9. **季节与天气是今天的客观事实**，条目内容必须与之一致：下雪就写雪、湿冷和路滑，
+   晴天不要写打伞、湿透、雨声；冬天不出现冰镇西瓜、凉席、蝉鸣、短袖，夏天不出现羽绒服、
+   暖气、积雪。同一天不能一半晴天一半下雨。
+10. **相邻条目要有因果**：上一件事的结果可以带到下一件（弄湿了要换衣服、出门耽误了后面就晚吃），
+   不要每条都像从零开始的独立片段。前一天的「进行中状态」必须被延续或明确交代结束。
 
 输出格式（严格照此结构）：
-{"schedule": [{"time": "07:20", "end": "08:10", "activity": "具体的一件事", "mood": "此刻心情", "message_seed": "可分享的小细节或空字符串", "basis": ["persona", "weekday"], "confidence": 0.9}]}
+{"schedule": [{"time": "07:20", "end": "08:10", "activity": "具体的一件事", "mood": "此刻心情", "message_seed": "可分享的小细节或空字符串", "basis": ["persona", "weekday"], "confidence": 0.9}],
+ "state_after": ["今天结束时还留着的一件事或一种状态"]}
+
+state_after 是**跨天延续**用的：只写「到今天结束还没结束」的东西，0~3 条短句，例如
+「感冒还没好，嗓子哑」「冰箱里有半颗白菜」「借来的书还没还」「灯坏了没修」。
+已经结束的事不要写；没有就写空数组 []。明天会用它来接着过，所以别写「今天很开心」这种感受。
 """
 
 PLAN_USER_TEMPLATE = """【角色设定】
@@ -244,8 +255,19 @@ PLAN_USER_TEMPLATE = """【角色设定】
 【作息参考】大约 {sleep_end} 起床，{sleep_start} 前后入睡。{night_owl_hint}
 {routine_note}
 
+【今天的季节与天气】{season_line}
+{weather_line}
+（天气是今天的**客观事实**，不是形容词：下雨下雪就写湿冷、路滑、要收伞；
+晴天不要写打伞、湿透、雨声；同一天不能一半晴一半雨。反季节的东西一律不许出现。）
+
 【日程风格】
 {style}
+
+【允许也鼓励的「不完美」】
+- 至少有一条是「没做成 / 被打断 / 半途而废 / 做砸了」的小事；
+- 至少有一条是纯粹为了舒服、不为了效率的闲事（发呆、看窗外、跟猫说话、翻旧东西）；
+- 至少有一条和外面世界有关（快递、邻居、街上的动静、天气），但不必写下和人长谈。
+（完美的效率日程没有生活感，也最容易显得假。）
 
 【今天的基调】{pace}
 
@@ -259,6 +281,9 @@ PLAN_USER_TEMPLATE = """【角色设定】
 
 【今天绝对不能出现】{avoid_items}
 
+【今天必须覆盖的生活面】{required_categories}
+（除了睡觉和吃饭，今天至少要有这些方面的具体条目；不要一整天只剩工作和吃饭。）
+
 {relation_block}
 【禁止出现的内容】
 {forbidden}
@@ -269,10 +294,16 @@ PLAN_USER_TEMPLATE = """【角色设定】
 【最近几天吃过的（今天的早中晚三餐必须换一批，不得与下面重复，也不要连续两天吃同一类；主食与饮品可以不换）】
 {recent_foods}
 
+【这几天延续下来的状态】{status_notes}
+（这些是前几天留下、还没结束的事。今天要么让它自然延续（还没好 / 还没吃完 / 还没修好），
+要么在一条里明确交代它结束了（好了 / 吃完了 / 算了放弃了）。不要当作从来没发生过。）
+
 【昨天临近今天的部分（用于衔接，不要重复）】
 {yesterday_tail}
 
 【条目数量】请生成 {item_min}~{item_max} 条，最后一条要覆盖到入睡时间之后。
+（除睡觉以外，单条不要超过 3 小时。4 小时一条会把一整天压成四五件事，读起来很干；
+宁可把一件事拆成「准备 / 在做 / 收尾」几段，也不要一条写一整个下午。）
 """
 
 
@@ -308,13 +339,21 @@ def build_plan_user(
     life_items: list[str] | None = None,
     avoid_items: list[str] | None = None,
     relation_block: str = "",
+    season_line: str = "",
+    weather_line: str = "",
+    required_categories: list[str] | None = None,
+    status_notes: list[str] | None = None,
 ) -> str:
     """组装日程生成提示词。
 
     pace / theme / life_items / avoid_items 由 schedule.daily_flavor 产出：
     每天给一个「基调 + 一条小主线」，这是「日程千篇一律」的真正解药——
     只靠「请避免重复」这种笼统要求，模型只会换措辞不换内容。
-    relation_block 是可选的好感度段落（为空则整段消失）。
+    season_line / weather_line 由 life 模块给出（确定性天气）：模型没有天气概念，
+    不给它就会写出「下雪天晒被子」这类前后矛盾。
+    required_categories 是「今天必须覆盖的生活面」，避免整天只有工作与吃饭。
+    status_notes 是前几天留下、还没结束的状态（感冒、菜没吃完），
+    不喂进去就会出现「昨天病着、今天生龙活虎」的跨天断线。
     """
     return fill(
         PLAN_USER_TEMPLATE,
@@ -337,6 +376,12 @@ def build_plan_user(
             "life_items": "、".join(life_items or []) or "（无特别偏好，按设定自由安排）",
             "avoid_items": "、".join(avoid_items or []) or "（无）",
             "relation_block": (relation_block or "").strip(),
+            "season_line": (season_line or "").strip() or "（未提供季节信息）",
+            "weather_line": (weather_line or "").strip() or "（未提供天气信息）",
+            "required_categories": "、".join(required_categories or []) or "（无特别要求）",
+            "status_notes": (
+                "\n".join(f"- {note}" for note in (status_notes or [])) or "（无）"
+            ),
             "forbidden": "\n".join(f"- {line}" for line in forbidden) or "（无）",
             "recent": "\n".join(f"- {line}" for line in recent_lines) or "（无历史记录）",
             "recent_foods": "\n".join(f"- {line}" for line in (recent_foods or []))
@@ -364,6 +409,9 @@ def plan_retry_hint(kind: str, detail: str = "") -> str:
         "daylight": "上一次的输出里有条目的天色描写与该条目自己的时间对不上（例如下午的条目写「天黑了」，"
         "或深夜的条目写「阳光」）。请严格按上面的日出/日落边界改写这些条目："
         "日落之前的时段一定是天亮着的，日落之后才是夜里。",
+        "logic": "上一次的输出有前后自相矛盾的地方。天气、季节、作息、基调、"
+        "前几天的遗留状态都必须前后一致——请按下面列出的具体问题逐条改掉，"
+        "其余条目保持不动即可：",
     }
     base = hints.get(kind, "上一次的输出不合格，请重做。")
     if detail:

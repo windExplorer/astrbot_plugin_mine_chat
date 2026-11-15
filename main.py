@@ -37,6 +37,7 @@ _RELOAD_MODULES = (
     "config",
     "daylight",
     "bridge",
+    "life",
     "store",
     "bus",
     "llm",
