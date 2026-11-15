@@ -66,6 +66,7 @@ $includeList = @(
     "main.py",
     "config.py",
     "daylight.py",
+    "bridge.py",
     "store.py",
     "scope.py",
     "schedule.py",

@@ -18,6 +18,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from . import bridge as bridge_mod
 from . import bus as bus_mod
 from . import daylight
 from . import kb as kb_mod
@@ -545,6 +546,16 @@ class ProactiveService:
                     throttle=True,
                 )
 
+        # 语音通道：与图/表情互斥（一条消息只承载一种媒体）。已经命中图或表情时
+        # 语音让位且不消耗当日计数，理由同「一条消息只附一张图」。
+        voice_plan: dict[str, Any] | None = None
+        if image_plan is not None or sticker_path or sticker_url:
+            await self._record(persona_id, "voice", "voice_yield", umo, throttle=True)
+        else:
+            voice_plan, _voice_hit, _voice_note = await self._plan_voice(
+                persona_id, settings, state
+            )
+
         # 手动/force 发送撞上睡眠时段时的场景一致性：
         # 角色是「刚被手机震醒」在发消息——文字要迷糊，图也要是刚醒的样子
         asleep = is_sleeping(info.get("current"))
@@ -558,6 +569,7 @@ class ProactiveService:
                 state=state,
                 image_plan=image_plan,
                 asleep=asleep,
+                voice=bool(voice_plan),
             )
         except llm_mod.LLMError as exc:
             logger.warning("mine_chat: 主动消息生成失败 persona=%s: %s", persona_id, exc)
@@ -583,19 +595,62 @@ class ProactiveService:
             return False, "interrupted"
 
         image_path = str(image_plan.get("path") or "") if image_plan else ""
-        delivered = await self.composer.deliver(
-            umo,
-            texts,
-            delay=settings.proactive_segment_delay,
-            image_path=image_path or sticker_path or None,
-            image_url=sticker_url or None,
-        )
+        voice_text = "\n".join(texts)
+        voice_name = str((voice_plan or {}).get("voice") or "")
+        voice_sent = False
+        if voice_plan and voice_plan.get("mode") == "replace":
+            # 只发语音：真人发语音时不会同时把同一句打成文字。
+            # 合成/发送失败就把文字补发——宁可多发一条字，也不能让这次主动落空。
+            voice_sent = await self.composer.send_voice(umo, voice_text, voice_name)
+            if voice_sent:
+                delivered = True
+                await self._record(
+                    persona_id, "voice", "voice_ok", umo, content=voice_text[:120]
+                )
+            else:
+                await self._record(persona_id, "voice", "voice_fallback", umo, throttle=True)
+                delivered = await self.composer.deliver(
+                    umo,
+                    texts,
+                    delay=settings.proactive_segment_delay,
+                    image_path=image_path or sticker_path or None,
+                    image_url=sticker_url or None,
+                )
+        else:
+            delivered = await self.composer.deliver(
+                umo,
+                texts,
+                delay=settings.proactive_segment_delay,
+                image_path=image_path or sticker_path or None,
+                image_url=sticker_url or None,
+            )
+            if delivered and voice_plan:
+                voice_sent = await self.composer.send_voice(umo, voice_text, voice_name)
+                await self._record(
+                    persona_id,
+                    "voice",
+                    "voice_ok" if voice_sent else "voice_fallback",
+                    umo,
+                    content=voice_text[:120] if voice_sent else "",
+                    throttle=not voice_sent,
+                )
         if not delivered:
             await self._record(persona_id, "error", "send_failed", umo)
             await self._reschedule(persona_id)
             return False, "send_failed"
 
-        await self.composer.archive(umo, texts)
+        archived = await self.composer.archive(umo, texts)
+        if not archived:
+            # 写不进去不影响已发出的事实；每轮 on_llm_request 会回填，
+            # 但这里必须留痕，否则「她不认自己说过」永远查不到线索。
+            await self._record(
+                persona_id,
+                "guard",
+                "archive_failed",
+                umo,
+                content=voice_text[:200],
+                throttle=True,
+            )
         # 跨次连续（v1.0.43）：留一份「最近主动说过什么」，下次生成时别再重复。
         # 失败不影响已发出的消息，所以只记 debug。
         try:
@@ -624,6 +679,13 @@ class ProactiveService:
                 else 1
             )
             extra_updates["stickers_date"] = today
+        if voice_sent:
+            extra_updates["voices_today"] = (
+                int(fresh.get("voices_today") or 0) + 1
+                if fresh.get("voices_date") == today
+                else 1
+            )
+            extra_updates["voices_date"] = today
         await self.store.upsert_proactive_state(
             persona_id,
             primary_umo=umo,
@@ -634,6 +696,21 @@ class ProactiveService:
             unanswered=int(fresh.get("unanswered") or 0) + 1,
             **extra_updates,
         )
+        # 可选：把「角色主动发了一条」记进好感度事件流水。
+        # 默认关闭——好感度应当由用户真实互动产生，主动消息自己不该加分。
+        # 打开时用非 core 来源（不占对方的每日额度）+ 每日序号做幂等键。
+        if settings.proactive_affinity_event:
+            await bridge_mod.affinity_add_event(
+                self.context,
+                persona_id,
+                bridge_mod.umo_user_id(umo),
+                code="chat.proactive",
+                delta=1.0,
+                dedupe_key=f"mine_chat:proactive:{persona_id}:{today}:{sent_today + 1}",
+                evidence=content[:120],
+                session_id=umo,
+            )
+
         await self._record(persona_id, "send", "ok", umo, content)
         logger.info(
             "mine_chat: 已主动发送 persona=%s umo=%s segments=%s",
@@ -928,6 +1005,46 @@ class ProactiveService:
         )
         return path or "", url or "", True, "", False
 
+    async def _plan_voice(
+        self, persona_id: str, settings: Settings, state: dict[str, Any]
+    ) -> tuple[dict[str, Any] | None, bool, str]:
+        """决定这次要不要发语音（CosyVoice3 联动）。
+
+        返回 (语音计划 | None, 是否命中, 失败说明)。
+        与配图/表情互斥（一条消息只承载一种媒体，语音优先让位给已经在掷骰里
+        命中的图——图是「我此刻的生活」，语音只是「换个说法」）。
+        """
+        if not settings.proactive_voice_enabled or settings.proactive_voice_probability <= 0:
+            await self._record(persona_id, "voice", "voice_off", "", throttle=True)
+            return None, False, ""
+        if random.random() > settings.proactive_voice_probability:
+            await self._record(persona_id, "voice", "voice_dice", "", throttle=True)
+            return None, False, ""
+
+        today = datetime.now().date().isoformat()
+        used = (
+            int(state.get("voices_today") or 0) if state.get("voices_date") == today else 0
+        )
+        limit = settings.proactive_voice_max_per_day
+        if limit > 0 and used >= limit:
+            await self._record(persona_id, "voice", "voice_limit", "", throttle=True)
+            return None, False, ""
+
+        if not bridge_mod.voice_available(self.context):
+            await self._record(
+                persona_id,
+                "voice",
+                "voice_no_api",
+                "",
+                content="CosyVoice 未安装 / 未启用 / 没有可用音色 / 服务端冷却中",
+                throttle=True,
+            )
+            return None, False, "语音插件不可用"
+        return {
+            "mode": settings.proactive_voice_mode,
+            "voice": settings.proactive_voice_name,
+        }, True, ""
+
     # ---------------------------------------------------------------- #
     # 排期
     # ---------------------------------------------------------------- #
@@ -1039,6 +1156,9 @@ class ProactiveService:
         stickers_today = (
             int(state.get("stickers_today") or 0) if state.get("stickers_date") == today else 0
         )
+        voices_today = (
+            int(state.get("voices_today") or 0) if state.get("voices_date") == today else 0
+        )
         next_at = state.get("next_at")
         next_text = "-"
         if next_at:
@@ -1058,6 +1178,9 @@ class ProactiveService:
             "stickers_today": stickers_today,
             "sticker_max_per_day": settings.proactive_sticker_max_per_day,
             "sticker_enabled": settings.proactive_sticker_enabled,
+            "voices_today": voices_today,
+            "voice_max_per_day": settings.proactive_voice_max_per_day,
+            "voice_enabled": settings.proactive_voice_enabled,
             "unanswered": int(state.get("unanswered") or 0),
             "max_unanswered": settings.proactive_max_unanswered,
             "last_sent_at": state.get("last_sent_at"),

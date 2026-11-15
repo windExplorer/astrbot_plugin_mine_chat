@@ -36,6 +36,7 @@ AUTHOR = "windExplorer"
 _RELOAD_MODULES = (
     "config",
     "daylight",
+    "bridge",
     "store",
     "bus",
     "llm",
@@ -317,10 +318,44 @@ class MineChatPlugin(Star):
     async def on_llm_request(self, event: AstrMessageEvent, req: Any) -> None:
         if self._terminating or not self._ready:
             return
+        # 先保证对话连贯（最近一条主动消息必须在本轮上下文里），再注入日程。
+        # 这一层独立于 inject.enabled：即使关掉了日程注入，也不能让角色
+        # 忘了自己刚说过什么。
+        try:
+            await self._ensure_proactive_echo(event, req)
+        except Exception as exc:  # noqa: BLE001
+            self._warn_once("echo", "mine_chat: 主动消息回填失败: %s", exc)
         try:
             await self._inject_schedule(event, req)
         except Exception as exc:  # noqa: BLE001
             self._warn_once("inject", "mine_chat: 注入日程失败: %s", exc)
+
+    async def _ensure_proactive_echo(self, event: AstrMessageEvent, req: Any) -> None:
+        """把「角色最近主动发的那条」补进本轮上下文（缺了才补）。
+
+        解决的是这样一个真实故障：主动消息发出去、也写回了历史，但 AstrBot
+        每轮结束会整表覆盖 conversation.content（写入不参与它的 session lock），
+        或者写入落到了别的对话 id 上——于是用户追问时模型「没见过」那条消息，
+        答非所问还说自己没发过。这里每轮比对一次，缺就往 req.contexts 里补，
+        由 AstrBot 自己在本轮结束落库，天然自愈。
+        """
+        settings = self.settings()
+        if not settings.enabled or not settings.persona_selected():
+            return
+        if settings.inject_echo_window_minutes <= 0:
+            return
+        umo = getattr(event, "unified_msg_origin", "") or ""
+        if not umo or scope_mod.umo_kind(umo) == "other":
+            return
+        persona_id = await self.resolver.resolve_persona_id(umo)
+        added = await self.proactive.composer.ensure_echo_in_context(
+            req, persona_id, settings.inject_echo_window_minutes
+        )
+        if added and "echo:ok" not in self._warned:
+            self._warned.add("echo:ok")
+            logger.info(
+                "mine_chat: 已在上下文里补齐最近一条主动消息（此前缺失）persona=%s", persona_id
+            )
 
     async def _inject_schedule(self, event: AstrMessageEvent, req: Any) -> None:
         settings = self.settings()
@@ -360,17 +395,16 @@ class MineChatPlugin(Star):
             return
 
         state = await self.store.get_proactive_state(persona_id)
-        last_proactive = ""
-        if int(state.get("unanswered") or 0) > 0:
-            last_proactive = str(state.get("last_message") or "")
-
+        # 不再用 unanswered>0 当唯一条件：用户一说话它就归零，而那一刻正是
+        # 最需要「记得自己刚说过什么」的时候。窗口判断交给 build_injection_block。
         block = view_mod.build_injection_block(
             items=list(plan["items"]),
             now_minutes=view_mod.now_minutes_for(plan_date),
             settings=settings,
             plan_date=plan_date,
-            last_proactive=last_proactive,
+            last_proactive=str(state.get("last_message") or ""),
             unanswered=int(state.get("unanswered") or 0),
+            last_proactive_at=state.get("last_sent_at"),
         )
         if not block:
             self._inject_skip("日程条目为空")
@@ -559,6 +593,17 @@ class MineChatPlugin(Star):
             "sticker_fallback": "表情拉取失败，已降级为纯文字发送（本条不带表情）",
             "sticker_no_api": "萌萌表情包不可用（未装/停用/版本低于 v0.2.0）",
             "sticker_yield": "表情让位给了配图（一条消息只带一张图）",
+            # 语音通道（decision=voice，CosyVoice3 联动）
+            "voice_ok": "这条是语音",
+            "voice_off": "语音未开启或概率为 0",
+            "voice_dice": "语音掷骰未命中",
+            "voice_limit": "今日语音已达上限",
+            "voice_no_api": "CosyVoice 不可用（未安装/未启用/没有可用音色/服务端冷却中）",
+            "voice_yield": "语音让位给了配图或表情（一条消息只承载一种媒体）",
+            "voice_fallback": "语音合成或发送失败，已降级为文字",
+            # 上下文连贯
+            "archive_failed": "主动消息写入对话历史失败——已由每轮上下文回填兜住，"
+            "用户追问时不再「不认账」",
         }
         return mapping.get(reason, reason)
 

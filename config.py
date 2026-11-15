@@ -162,6 +162,10 @@ class Settings:
     inject_lookback_minutes: int = 90
     inject_lookahead_minutes: int = 180
     inject_include_seed: bool = True
+    # 「上一句是角色主动说的」要记住多久：用户隔几小时才回，也必须知道对方在回哪句。
+    # 原实现靠 unanswered>0 判断，而用户一说话 unanswered 就被清零——这正是
+    # 「主动消息发了一件事、用户追问、她答非所问还不承认」的根因之一。
+    inject_echo_window_minutes: int = 360
 
     # 日程
     schedule_enabled: bool = True
@@ -179,6 +183,9 @@ class Settings:
     schedule_forbidden: list[str] = field(default_factory=list)
     schedule_model: str = ""
     schedule_temperature: float = 1.0
+    # 好感度中枢在场时，让关系档位影响「生活里有没有为对方留的痕迹」。
+    # 缺插件/未建档时自动跳过，不影响生成。
+    schedule_use_affinity: bool = True
 
     # 主动
     proactive_enabled: bool = True
@@ -223,6 +230,20 @@ class Settings:
     proactive_sticker_token: str = ""
     proactive_sticker_probability: float = 0.15
     proactive_sticker_max_per_day: int = 2
+
+    # 主动消息语音（CosyVoice3 联动）——「真的开口说一句」，与图/表情互斥
+    proactive_voice_enabled: bool = False
+    proactive_voice_probability: float = 0.2
+    proactive_voice_max_per_day: int = 2
+    proactive_voice_name: str = ""
+    # append = 文字照发、后面补一条语音；replace = 最后一条文字改成语音（失败会补回文字）
+    proactive_voice_mode: str = "append"
+
+    # 好感度中枢（萌萌好感度 affinity.v1）只读联动
+    proactive_use_affinity: bool = True
+    # 可选：把「角色主动发言」也写一条好感度事件（默认关——
+    # 好感度应当是用户互动产生的，主动消息不该自己给自己加分）
+    proactive_affinity_event: bool = False
 
     # 提示词覆盖
     prompt_plan_override: str = ""
@@ -301,6 +322,12 @@ class Settings:
             inject_include_seed=to_bool(
                 pick(inject, "include_seed", "inject_include_seed", True), True
             ),
+            inject_echo_window_minutes=to_int(
+                pick(inject, "echo_window_minutes", "inject_echo_window_minutes", 360),
+                360,
+                0,
+                2880,
+            ),
             schedule_enabled=to_bool(pick(schedule, "enabled", "schedule_enabled", True), True),
             schedule_time_min=parse_hhmm(
                 pick(schedule, "time", "schedule_time", "07:30"), "07:30"
@@ -336,6 +363,9 @@ class Settings:
             schedule_model=to_str(pick(schedule, "model", "schedule_model", "")),
             schedule_temperature=to_float(
                 pick(schedule, "temperature", "schedule_temperature", 1.0), 1.0, 0.0, 2.0
+            ),
+            schedule_use_affinity=to_bool(
+                pick(schedule, "use_affinity", "schedule_use_affinity", True), True
             ),
             proactive_enabled=to_bool(
                 pick(proactive, "enabled", "proactive_enabled", True), True
@@ -502,6 +532,38 @@ class Settings:
                 2,
                 0,
                 50,
+            ),
+            proactive_voice_enabled=to_bool(
+                pick(proactive, "voice_enabled", "proactive_voice_enabled", False), False
+            ),
+            proactive_voice_probability=to_float(
+                pick(proactive, "voice_probability", "proactive_voice_probability", 0.2),
+                0.2,
+                0.0,
+                1.0,
+            ),
+            proactive_voice_max_per_day=to_int(
+                pick(proactive, "voice_max_per_day", "proactive_voice_max_per_day", 2),
+                2,
+                0,
+                50,
+            ),
+            proactive_voice_name=to_str(
+                pick(proactive, "voice_name", "proactive_voice_name", "")
+            ),
+            proactive_voice_mode=(
+                "replace"
+                if to_str(
+                    pick(proactive, "voice_mode", "proactive_voice_mode", "append"), "append"
+                ).lower()
+                == "replace"
+                else "append"
+            ),
+            proactive_use_affinity=to_bool(
+                pick(proactive, "use_affinity", "proactive_use_affinity", True), True
+            ),
+            proactive_affinity_event=to_bool(
+                pick(proactive, "affinity_event", "proactive_affinity_event", False), False
             ),
             prompt_plan_override=to_str(pick(prompt, "plan", "prompt_plan_override", "")),
             prompt_proactive_override=to_str(

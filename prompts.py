@@ -58,6 +58,153 @@ def parse_profile_text(text: str) -> tuple[str, str]:
 
 
 # --------------------------------------------------------------------------- #
+# 人格提示词的「生活向」裁剪与偏好提取
+# --------------------------------------------------------------------------- #
+# 为什么需要它：用户的人格系统提示词（例如霜岛绫那份）有五六千字，其中大半是
+# 「消息发送设定 / 纯文本格式铁律 / 六条铁律 / 关系解锁 / 内容分级 / 括号描写 /
+# 画图流程 / 知识库检索规则」——这些是**对话规则**，对「今天怎么过日子」毫无
+# 帮助，却会挤掉真正有用的【作息】【喜好】【雷区】【小习惯】。原实现直接
+# persona_prompt[:3000]，恰好把最有用的段落截在门外，于是日程写得像通用模板。
+_LIFE_SECTION_KEEP: tuple[str, ...] = (
+    "身份", "背景", "世界观", "定位", "外貌", "发型", "局部美学", "职业", "住所",
+    "作息", "性格", "说话方式", "喜好", "雷区", "小习惯", "习惯", "偏好", "厌恶",
+)
+_LIFE_SECTION_DROP: tuple[str, ...] = (
+    "消息发送", "纯文本", "格式", "铁律", "禁语", "关系解锁", "回退", "补救",
+    "内容分级", "完全交付", "括号描写", "画图", "拍照", "自拍", "发图",
+    "知识库", "文档关联", "检索", "comfyui", "成人", "亲密",
+)
+_SECTION_RE = re.compile(r"^\s*【([^】]{1,60})】")
+
+
+def split_persona_sections(text: str) -> list[tuple[str, str]]:
+    """按 `【小标题】` 把人格提示词切成 [(标题, 正文)]；首个无标题段标题为空串。"""
+    raw = str(text or "")
+    if not raw.strip():
+        return []
+    sections: list[tuple[str, str]] = []
+    title = ""
+    buffer: list[str] = []
+    for line in raw.splitlines():
+        match = _SECTION_RE.match(line)
+        if match:
+            if title or any(part.strip() for part in buffer):
+                sections.append((title, "\n".join(buffer).strip()))
+            title = match.group(1).strip()
+            buffer = [line[match.end():].strip()]
+            continue
+        buffer.append(line)
+    if title or any(part.strip() for part in buffer):
+        sections.append((title, "\n".join(buffer).strip()))
+    return [(name, body) for name, body in sections if body]
+
+
+def _section_kept(title: str) -> bool:
+    if not title:
+        # 无标题首段通常是「你是谁 / 多大 / 住在哪」——整份人格最关键的一句
+        return True
+    lowered = title.lower()
+    if any(word in lowered for word in _LIFE_SECTION_DROP):
+        return False
+    return any(word in title for word in _LIFE_SECTION_KEEP)
+
+
+def extract_life_profile(persona_prompt: str, limit: int = 4200) -> str:
+    """只保留人格里「关于生活」的段落，供日程生成使用。
+
+    裁剪失败（人格没有分段结构、或裁完太短）时退回原文前 limit 字：
+    宁可信息少一点，也不能把设定整段丢掉。
+    """
+    raw = str(persona_prompt or "").strip()
+    if not raw:
+        return ""
+    sections = split_persona_sections(raw)
+    if not sections:
+        return raw[:limit]
+    kept: list[str] = []
+    for title, body in sections:
+        if not _section_kept(title):
+            continue
+        text = f"【{title}】{body}" if title else body
+        kept.append(text)
+    merged = "\n".join(kept).strip()
+    if len(merged) < 120:
+        return raw[:limit]
+    if len(merged) > limit:
+        merged = merged[:limit].rstrip() + "…"
+    return merged
+
+
+# 主动消息只丢「这一次发言用不上」的长段：关系解锁的完整表、成人内容分级、
+# 画图流程、知识库检索规则、回退补救细则。说话方式/格式铁律/禁语反而要留——
+# 那些直接决定这条消息长什么样。
+_CHAT_SECTION_DROP: tuple[str, ...] = (
+    "关系解锁", "回退", "补救", "内容分级", "完全交付", "括号描写",
+    "画图", "拍照", "自拍", "发图", "知识库", "文档关联", "检索",
+    "comfyui", "成人", "亲密",
+)
+
+
+def extract_chat_profile(persona_prompt: str, limit: int = 3600) -> str:
+    """主动消息用的人格摘要：保留说话方式与格式铁律，丢掉长而无关的段落。"""
+    raw = str(persona_prompt or "").strip()
+    if not raw:
+        return ""
+    sections = split_persona_sections(raw)
+    if not sections:
+        return raw[:limit]
+    kept: list[str] = []
+    for title, body in sections:
+        lowered = title.lower()
+        if title and any(word in lowered for word in _CHAT_SECTION_DROP):
+            continue
+        kept.append(f"【{title}】{body}" if title else body)
+    merged = "\n".join(kept).strip()
+    if len(merged) < 120:
+        return raw[:limit]
+    if len(merged) > limit:
+        merged = merged[:limit].rstrip() + "…"
+    return merged
+
+
+_SPLIT_WORDS_RE = re.compile(r"[、，,／/；;\n]+")
+
+
+def _section_items(title: str, body: str, limit: int = 12) -> list[str]:
+    """把某段正文拆成短词列表（去掉标题行本身）。"""
+    first, _, rest = body.partition("\n")
+    text = rest if rest.strip() else first
+    items: list[str] = []
+    for part in _SPLIT_WORDS_RE.split(text):
+        word = part.strip(" 　·-—:：。.")
+        if not word or len(word) > 14:
+            continue
+        if word not in items:
+            items.append(word)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def extract_preferences(persona_prompt: str) -> tuple[list[str], list[str]]:
+    """从人格提示词里取 (喜好, 雷区/讨厌)。
+
+    日程与主动消息都拿它当「今天可能出现在生活里的东西」与「绝对不能写的
+    内容」——这两项才是让文字「像这个人」的最直接抓手。
+    """
+    likes: list[str] = []
+    dislikes: list[str] = []
+    for title, body in split_persona_sections(persona_prompt):
+        if not title:
+            continue
+        if not likes and ("喜好" in title or "喜欢" in title):
+            likes = _section_items(title, body)
+        if not dislikes and ("雷区" in title or "讨厌" in title or "厌恶" in title):
+            dislikes = _section_items(title, body)
+    return likes, dislikes
+
+
+# --------------------------------------------------------------------------- #
 # 日程生成
 # --------------------------------------------------------------------------- #
 PLAN_SYSTEM = """你是一个生活日程生成器，负责为指定角色安排「今天」一整天的生活。
@@ -100,6 +247,19 @@ PLAN_USER_TEMPLATE = """【角色设定】
 【日程风格】
 {style}
 
+【今天的基调】{pace}
+
+【今天的一条小主线】{theme}
+（这条主线要在 2~4 个条目里自然推进：铺垫 → 正在做 → 收尾或余味。
+不要只在一条里点一下，也不要写成「完成任务」式的清单；主线之外该有的
+吃饭、洗漱、发呆照常安排。）
+
+【可以自然出现在今天的东西】{life_items}
+（这些来自角色自己的喜好，随手出现即可，不必每条都提，也不要为了塞而塞。）
+
+【今天绝对不能出现】{avoid_items}
+
+{relation_block}
 【禁止出现的内容】
 {forbidden}
 
@@ -143,7 +303,19 @@ def build_plan_user(
     item_min: int,
     item_max: int,
     recent_foods: list[str] | None = None,
+    pace: str = "",
+    theme: str = "",
+    life_items: list[str] | None = None,
+    avoid_items: list[str] | None = None,
+    relation_block: str = "",
 ) -> str:
+    """组装日程生成提示词。
+
+    pace / theme / life_items / avoid_items 由 schedule.daily_flavor 产出：
+    每天给一个「基调 + 一条小主线」，这是「日程千篇一律」的真正解药——
+    只靠「请避免重复」这种笼统要求，模型只会换措辞不换内容。
+    relation_block 是可选的好感度段落（为空则整段消失）。
+    """
     return fill(
         PLAN_USER_TEMPLATE,
         {
@@ -160,6 +332,11 @@ def build_plan_user(
             "night_owl_hint": night_owl_hint,
             "routine_note": routine_note or "今天的作息与平时基本一致。",
             "style": style or "（无特别偏好）",
+            "pace": (pace or "").strip() or "平常的一天：节奏与平时接近。",
+            "theme": (theme or "").strip() or "（无特别主线，按角色自己的日常过）",
+            "life_items": "、".join(life_items or []) or "（无特别偏好，按设定自由安排）",
+            "avoid_items": "、".join(avoid_items or []) or "（无）",
+            "relation_block": (relation_block or "").strip(),
             "forbidden": "\n".join(f"- {line}" for line in forbidden) or "（无）",
             "recent": "\n".join(f"- {line}" for line in recent_lines) or "（无历史记录）",
             "recent_foods": "\n".join(f"- {line}" for line in (recent_foods or []))
@@ -197,6 +374,45 @@ def plan_retry_hint(kind: str, detail: str = "") -> str:
 # --------------------------------------------------------------------------- #
 # 主动消息
 # --------------------------------------------------------------------------- #
+# 关系档位 -> 日程里「有没有为对方留的痕迹」。
+# 铁律 1（日程里不出现用户）不破：这里只允许「生活细节上的多一份」，
+# 不允许出现「等他消息」「和他聊天」这类把日常绑在对方身上的写法。
+_RELATION_TRACE: dict[str, str] = {
+    "close": "已经算亲近。今天的生活里可以有一两处「为对方留着」的痕迹"
+             "（多备了一份食材、把借出去的东西放回原处、看到合适的东西顺手记下），"
+             "但只作为细节出现：不占条目、不写「和他聊天」、不要每段都提。",
+    "intimate": "关系已经很近。今天可以有一两处明显一点的细节"
+                "（做多了的那一份留着、把人可能会用的东西放在顺手的位置、"
+                "半夜还醒着），孤独感和在意藏在动作里，不外露，也不占条目。",
+    "bonded": "关系已经很深。生活里自然会有对方的痕迹"
+              "（东西混在一起、习惯性地留一份、出门会想要不要带点什么回来），"
+              "但依然只写她自己的动作，不写对话、不写「等」；克制比煽情更贴。",
+}
+
+
+def build_schedule_relation_block(snapshot: Any) -> str:
+    """日程提示词里的「关系 + 情绪底色」段（无好感度数据时返回空串）。"""
+    if snapshot is None:
+        return ""
+    blocks: list[str] = []
+    stage = str(getattr(snapshot, "stage", "") or "").strip().lower()
+    trace = _RELATION_TRACE.get(stage)
+    if trace:
+        label = str(getattr(snapshot, "stage_label", "") or stage)
+        score = float(getattr(snapshot, "score", 0.0) or 0.0)
+        blocks.append(f"【你们的关系】好感度档位：{label}（{score:g} 分）。{trace}")
+    mood_line = ""
+    getter = getattr(snapshot, "mood_line", None)
+    if callable(getter):
+        mood_line = str(getter() or "")
+    if mood_line:
+        blocks.append(
+            f"【今天的情绪底色】{mood_line}——"
+            "各条目的心情要在这个底色上自然浮动，不要每条都写同一个词。"
+        )
+    return "\n\n".join(blocks)
+
+
 PROACTIVE_SYSTEM_TEMPLATE = """你现在是「{character_name}」。用户没有先说话，你要主动给用户发一条消息。
 
 铁律：
@@ -210,7 +426,11 @@ PROACTIVE_SYSTEM_TEMPLATE = """你现在是「{character_name}」。用户没有
 7. 上下文要接得上：最近和用户聊到一半就顺着那个话题往下说，不要自顾自另起一摊；
    不要重复你最近主动发过的内容或句式（下面会给你），也不要问已经问过的问题；
    跨天的主动要像「过了那段时间的人」——别把前天的事说成刚刚发生的。
+8. 如果【你们最近的对话】里最后一句是用户问你的事、而你没答，这次要先把它接上，
+   再顺带提你自己的生活——不要假装那句话不存在。
+{relation_hint}
 {unanswered_hint}
+{voice_hint}
 {extra}
 只输出你要发送的内容本身，不要任何解释、不要加引号包裹。
 """
@@ -219,10 +439,38 @@ PROACTIVE_USER_TEMPLATE = """【现在的时间】{now}
 （这是唯一的真实时间。你说的任何时间/时刻必须与它一致，严禁自己编造别的时间。）
 {daylight_fact}
 【你此刻的状态】{current_block}
-【可以顺口提的小事】{seed}
-【你们最近的对话】{recent_chat}
+{mood_line}【可以顺口提的小事】{seed}
+{relation_line}【你们最近的对话】{recent_chat}
 【你最近主动发过的（别再重复这些内容和句式）】{recent_proactive}{image_hint}
 """
+
+VOICE_HINT_TEMPLATE = """
+【这条会发成语音】下面这段话会被合成成语音念出来，所以：
+- 只用「说出口的话」，不要括号动作/神态/心理，不要颜文字、表情符号、markdown；
+- 句子要短、口语、有停顿感（可以多用句号和省略号），别写书面长句和生僻词；
+- 整条控制在 {max_chars} 字以内；数字、英文缩写尽量改成口语说法。
+"""
+
+
+def build_voice_hint(max_chars: int = 60) -> str:
+    return VOICE_HINT_TEMPLATE.replace("{max_chars}", str(max(20, int(max_chars))))
+
+
+def build_relation_hint(relation_line: str, initiative_line: str) -> str:
+    """关系档位对「这次主动该有多主动」的约束（来自好感度中枢）。
+
+    写成「参考」而不是硬规定：人格自己会按关系层演绎，外部分数只是同一件事
+    的另一种度量，两者冲突时以人设为准（否则会出现「人设是 L4 但分数还低，
+    模型突然变冷淡」的割裂感）。
+    """
+    blocks: list[str] = []
+    if relation_line.strip():
+        blocks.append(f"【你和对方现在的关系】{relation_line.strip()}\n"
+                      "（这是好感度中枢记录的度量，用来校准语气深浅；"
+                      "如果你的人设里关系已经更深，以人设为准，不要因为分数低就突然变冷。）")
+    if initiative_line.strip():
+        blocks.append(f"【这次主动的分寸】{initiative_line.strip()}")
+    return "\n".join(blocks)
 
 UNANSWERED_HINT_TEMPLATE = """
 注意：用户已经连续 {unanswered} 次没有回你了。这次要比平时更短、更轻，不要催促，不要追问为什么不回，
@@ -259,6 +507,9 @@ def build_proactive_system(
     unanswered: int,
     extra: str,
     image_hint: str = "",
+    relation_line: str = "",
+    initiative_line: str = "",
+    voice_hint: str = "",
 ) -> str:
     if unanswered >= 2:
         unanswered_hint = UNANSWERED_HINT_TEMPLATE.replace("{unanswered}", str(unanswered))
@@ -269,7 +520,9 @@ def build_proactive_system(
         {
             "character_name": character_name or "你扮演的角色",
             "max_segments": str(max(1, max_segments)),
+            "relation_hint": build_relation_hint(relation_line, initiative_line),
             "unanswered_hint": unanswered_hint,
+            "voice_hint": voice_hint,
             "extra": f"\n额外要求：{extra}" if extra else "",
         },
     )
@@ -296,6 +549,8 @@ def build_proactive_user(
     daylight_fact: str = "",
     recent_proactive: str = "",
     image_hint: str = "",
+    mood_line: str = "",
+    relation_line: str = "",
 ) -> str:
     """组装主动消息的用户侧上下文。
 
@@ -304,6 +559,8 @@ def build_proactive_user(
     image_hint：随图说明（v1.0.44 起放在用户侧末尾）。放这里而不是系统提示词，
     是因为「最后读到的东西」约束力最强——用户反馈过「文字和图片对不上」，
     而它原先夹在系统提示词里、后面还跟着一大段人格设定。
+    mood_line / relation_line：好感度中枢投影出的「此刻心情」与「关系现状」，
+    为空时整行消失（不占位、不影响老调用）。
     """
     return fill(
         PROACTIVE_USER_TEMPLATE,
@@ -317,6 +574,10 @@ def build_proactive_user(
             or last_proactive
             or "（这是你第一次主动找用户）",
             "image_hint": image_hint or "",
+            "mood_line": f"【你此刻的心情】{mood_line}\n" if mood_line.strip() else "",
+            "relation_line": (
+                f"【你和对方现在的关系】{relation_line}\n" if relation_line.strip() else ""
+            ),
         },
     )
 

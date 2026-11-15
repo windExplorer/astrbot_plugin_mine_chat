@@ -14,7 +14,7 @@ import json
 import time
 from typing import Any, Callable, Iterable, Sequence
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # 只做「加列」这类幂等迁移；新装的库 DDL 已含新列，重复 ALTER 报错时忽略。
 _MIGRATIONS: tuple[str, ...] = (
@@ -22,6 +22,9 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE proactive_state ADD COLUMN images_date TEXT",
     "ALTER TABLE proactive_state ADD COLUMN stickers_today INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE proactive_state ADD COLUMN stickers_date TEXT",
+    # v1.1.0：语音通道（CosyVoice 联动）独立计数，与图/表情分开限流
+    "ALTER TABLE proactive_state ADD COLUMN voices_today INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE proactive_state ADD COLUMN voices_date TEXT",
 )
 
 _DDL: tuple[str, ...] = (
@@ -103,6 +106,8 @@ _DDL: tuple[str, ...] = (
         images_date   TEXT,
         stickers_today INTEGER NOT NULL DEFAULT 0,
         stickers_date  TEXT,
+        voices_today  INTEGER NOT NULL DEFAULT 0,
+        voices_date   TEXT,
         updated_at    REAL
     )
     """,
@@ -617,6 +622,8 @@ class Store:
         "images_date",
         "stickers_today",
         "stickers_date",
+        "voices_today",
+        "voices_date",
     )
 
     async def get_proactive_state(self, persona_id: str) -> dict[str, Any]:
@@ -635,6 +642,7 @@ class Store:
         state.setdefault("unanswered", 0)
         state.setdefault("images_today", 0)
         state.setdefault("stickers_today", 0)
+        state.setdefault("voices_today", 0)
         state["enabled"] = 1 if state.get("enabled") is None else int(state["enabled"])
         return state
 

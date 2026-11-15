@@ -16,6 +16,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from . import bridge as bridge_mod
 from . import bus as bus_mod
 from . import daylight
 from . import kb as kb_mod
@@ -458,6 +459,79 @@ def daily_routine(sleep_start_min: int, sleep_end_min: int, rng: random.Random) 
 
 
 # --------------------------------------------------------------------------- #
+# 每日基调与「一条小主线」（v1.1.0）
+# --------------------------------------------------------------------------- #
+# 「日程千篇一律」的真正根因不是模型不听话，而是**提示词里没有任何当天的差异**：
+# 除了日期、作息浮动和「请避免重复」，每天喂进去的东西完全一样，模型只能
+# 按同一个套路写。这里用确定性随机（seed = persona + 日期）给每天发一份
+# 「基调 + 主线」，同一天多次重试结果稳定，跨天一定不同。
+_PACE_TIERS: tuple[tuple[float, str, str], ...] = (
+    (0.36, "平常的一天", "节奏与平时一样：按部就班，没有特别的事，也没有特别的麻烦。"),
+    (0.18, "慢半拍的一天", "起得比平时更晚、动作更慢；效率偏低，愿意在人少的地方多待一会儿。"),
+    (0.16, "有点忙乱的一天", "临时多出几件事要处理，时间被反复打断，中间会有一点手忙脚乱。"),
+    (0.15, "出门走动的一天", "有一段像样的外出（办事 / 采购 / 见人 / 走远一点），路上占掉不少时间。"),
+    (0.15, "几乎不出门的一天", "一整天没离开住处附近，活动范围很小，时间感偏淡。"),
+)
+
+# 主线池：都是「独居 / 学生 / 上班 / 自由职业」都成立的生活小事。
+# 刻意不写具体地名与人名——角色细节由人设与喜好补，这里只提供「今天有什么不同」。
+_THEME_POOL: tuple[str, ...] = (
+    "把一件拖了很久的小事做完（修东西 / 整理 / 归还 / 补上一直没做的事）",
+    "某样日常用品用完了，出门补货，顺路去了一趟平时不去的地方",
+    "天气变化打乱了原计划，临时改成待在屋里",
+    "收到一件意外的东西（快递 / 邻居给的食物 / 久未联系的人的消息），心情因此有点变化",
+    "半夜没睡着，起来做了点事，第二天因此晚了",
+    "试着自己做一样没做过的吃的，过程比预想的麻烦",
+    "整理旧物时翻到某样东西，停下来看了很久",
+    "住处附近短暂地很吵（施工 / 搬家 / 有人聚会），只好换个地方待着",
+    "遇到一只不太怕人的动物，因此多逗留了一段时间",
+    "把某个坏掉的小东西修好了，或者确认修不好、决定换掉",
+    "身体不太舒服（头痛 / 胃 / 睡太少），一整天都调低了强度",
+    "被一件很小的好事影响，心情比平时轻一点",
+    "为了一个不重要的决定纠结了很久（穿什么 / 吃什么 / 要不要出门）",
+    "把房间彻底收拾了一遍，扔掉一批不用的东西",
+    "临时被拜托一件事，不太情愿但还是做了",
+    "走了一条平时不走的路，发现了一处以前没注意过的角落",
+    "读到或看到某个东西，反复想了很久",
+    "准备的量做多了（饭菜 / 收拾 / 提前量），多出来一份",
+)
+
+
+def daily_flavor(
+    persona_id: str,
+    plan_date: str,
+    likes: list[str] | None = None,
+    dislikes: list[str] | None = None,
+) -> dict[str, Any]:
+    """当天「基调 + 小主线 + 会出现的喜好物 + 要避开的雷区」。
+
+    确定性随机：同一天多次生成（含质量重试）拿到的是同一份 flavour，
+    提示词不会在重试之间漂移；换一天必然换一套。
+    """
+    rng = random.Random(f"flavor:{persona_id}:{plan_date}")
+    pace_name = _PACE_TIERS[0][1]
+    pace_desc = _PACE_TIERS[0][2]
+    roll = rng.random()
+    acc = 0.0
+    for probability, name, desc in _PACE_TIERS:
+        acc += probability
+        if roll < acc:
+            pace_name, pace_desc = name, desc
+            break
+    theme = rng.choice(_THEME_POOL)
+    # 喜好物每次取 2~3 项：太少没有画面感，太多会让模型把每个都塞进去
+    pool = [item for item in (likes or []) if item]
+    life_items = rng.sample(pool, min(len(pool), rng.randint(2, 3))) if pool else []
+    avoid = [item for item in (dislikes or []) if item][:4]
+    return {
+        "pace": f"{pace_name}——{pace_desc}",
+        "theme": theme,
+        "life_items": life_items,
+        "avoid_items": avoid,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # 服务
 # --------------------------------------------------------------------------- #
 class ScheduleService:
@@ -748,7 +822,10 @@ class ScheduleService:
                 model_id=settings.schedule_model,
                 system_prompt="你是一位角色设定整理师，只输出被要求格式的内容。",
                 prompt=prompts.build_profile_extract_prompt(
-                    persona_prompt[:3000], kb_context
+                    # 只喂「生活向」段落：把消息发送设定/格式铁律喂给提炼器，
+                    # 它会把「分段铁律」「不用 markdown」当成角色设定写进世界观。
+                    prompts.extract_life_profile(persona_prompt, limit=3000),
+                    kb_context,
                 ),
                 temperature=0.4,
                 timeout=90.0,
@@ -814,9 +891,17 @@ class ScheduleService:
         routine: dict[str, Any] | None = None,
     ) -> str:
         settings = self._settings_getter()
-        persona_prompt = await self.resolver.persona_prompt(persona_id)
-        if len(persona_prompt) > 3000:
-            persona_prompt = persona_prompt[:3000] + "…"
+        raw_persona = await self.resolver.persona_prompt(persona_id)
+        # v1.1.0：不再粗暴截前 3000 字（那份长提示词里前 3000 字有一半是
+        # 「消息发送设定 / 格式铁律 / 关系解锁」这类对话规则，恰好把
+        # 【作息】【喜好】【雷区】【小习惯】挤在门外）。改为按段落挑「生活向」
+        # 内容，并把【喜好】【雷区】单独抽成素材喂给当天的主线。
+        persona_prompt = prompts.extract_life_profile(raw_persona)
+        likes, dislikes = prompts.extract_preferences(raw_persona)
+        flavor = daily_flavor(persona_id, plan_date, likes, dislikes)
+        relation_block = ""
+        if settings.schedule_use_affinity:
+            relation_block = await self._relation_block(persona_id)
 
         try:
             target = datetime.strptime(plan_date, "%Y-%m-%d").date()
@@ -872,10 +957,32 @@ class ScheduleService:
             item_min=settings.schedule_item_min,
             item_max=settings.schedule_item_max,
             recent_foods=food_lines,
+            pace=flavor["pace"],
+            theme=flavor["theme"],
+            life_items=flavor["life_items"],
+            avoid_items=flavor["avoid_items"],
+            relation_block=relation_block,
         )
         if hint:
             body = f"{body}\n\n【上一次重做原因】\n{hint}\n"
         return body
+
+    async def _relation_block(self, persona_id: str) -> str:
+        """好感度中枢的关系/情绪底色（未装、未建档、出错都返回空串）。"""
+        try:
+            umo = await self.resolver.primary_umo_for(persona_id) or ""
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("mine_chat: 取主窗口失败（好感度联动跳过）: %s", exc)
+            return ""
+        user_id = bridge_mod.umo_user_id(umo)
+        try:
+            snapshot = await bridge_mod.affinity_snapshot(
+                self.context, persona_id, user_id
+            )
+        except Exception as exc:  # noqa: BLE001 - 联动失败不该挡住生成
+            logger.debug("mine_chat: 读取好感度失败（日程跳过）: %s", exc)
+            return ""
+        return prompts.build_schedule_relation_block(snapshot)
 
     @staticmethod
     def _daylight_detail(items: list[dict[str, Any]], month: int) -> str:

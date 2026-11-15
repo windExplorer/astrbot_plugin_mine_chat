@@ -20,6 +20,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from . import bridge as bridge_mod
 from . import bus as bus_mod
 from . import daylight
 from . import llm as llm_mod
@@ -30,6 +31,9 @@ _WEEKDAY_NAMES = ("周一", "周二", "周三", "周四", "周五", "周六", "�
 _SEGMENT_SEPARATOR = "---"
 MAX_SEGMENT_CHARS = 200
 USER_PLACEHOLDER = "(主动发起)"
+# 回填上下文时用的 user 占位：必须让模型一眼看出「这不是对方说的话」，
+# 否则它会把占位当成用户的开场白，反而更糊涂。
+USER_ECHO_PLACEHOLDER = "（以下是角色自己刚才主动发出去的消息，不是对方说的）"
 
 IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
 
@@ -695,12 +699,14 @@ class ProactiveComposer:
         state: dict[str, Any],
         image_plan: dict[str, Any] | None = None,
         asleep: bool = False,
+        voice: bool = False,
     ) -> list[str]:
         settings: Settings = self._settings_getter()
         character_name = self.resolver.persona_display_name(persona_id)
-        persona_prompt = await self.resolver.persona_prompt(persona_id)
-        if len(persona_prompt) > 2000:
-            persona_prompt = persona_prompt[:2000] + "…"
+        raw_persona = await self.resolver.persona_prompt(persona_id)
+        # 主动消息需要的是「说话方式 + 格式铁律 + 生活细节」；关系层细则、
+        # 成人分级、画图流程这些长段对单次发言没有用，反而挤掉有用的部分。
+        persona_prompt = prompts.extract_chat_profile(raw_persona)
 
         recent_chat = await self.recent_chat(umo, settings.proactive_history_messages)
         unanswered = int(state.get("unanswered") or 0)
@@ -710,6 +716,28 @@ class ProactiveComposer:
         # 跨次连续（v1.0.43）：最近几条主动 + 最近对话的时间锚
         recent_proactive = await self.recent_proactive_text(persona_id, now_dt)
         recent_chat = self._anchor_recent_chat(recent_chat, state, now_dt)
+
+        # 好感度（可选）：关系档位决定「这次主动该有多主动」，情绪四轴决定语气。
+        # 拿不到就什么都不加——绝不能把「没建档」当成 0 分写成「陌生人」。
+        relation_line = ""
+        initiative_line = ""
+        mood_line = ""
+        if settings.proactive_use_affinity:
+            try:
+                snapshot = await bridge_mod.affinity_snapshot(
+                    self.context, persona_id, bridge_mod.umo_user_id(umo)
+                )
+            except Exception as exc:  # noqa: BLE001 - 联动失败不该挡住发言
+                logger.debug("mine_chat: 读取好感度失败（主动消息跳过）: %s", exc)
+                snapshot = None
+            if snapshot is not None:
+                relation_line = snapshot.relation_line()
+                initiative_line = snapshot.initiative_line()
+                mood_line = snapshot.mood_line()
+
+        # 走语音时压成一条：真人发语音不会「分三段语音」
+        max_segments = 1 if voice else settings.proactive_max_segments
+        voice_hint = prompts.build_voice_hint(60) if voice else ""
 
         image_hint = (
             prompts.build_image_hint(str(image_plan.get("desc") or ""))
@@ -728,10 +756,15 @@ class ProactiveComposer:
                     "unanswered": str(unanswered),
                     "now": self.now_text(),
                     "daylight_fact": daylight.lighting_fact(now_dt),
-                    "last_proactive": last_proactive,
                     "recent_proactive": recent_proactive,
                     "extra": settings.proactive_extra_instruction,
                     "image_hint": image_hint,
+                    "relation_hint": prompts.build_relation_hint(
+                        relation_line, initiative_line
+                    ),
+                    "relation_line": relation_line,
+                    "mood_line": mood_line,
+                    "voice_hint": voice_hint,
                 },
             )
         else:
@@ -739,9 +772,12 @@ class ProactiveComposer:
             # 一大段人格设定，模型经常「没看见」，于是文字和图各说各的。
             system = prompts.build_proactive_system(
                 character_name=character_name,
-                max_segments=settings.proactive_max_segments,
+                max_segments=max_segments,
                 unanswered=unanswered,
                 extra=settings.proactive_extra_instruction,
+                relation_line=relation_line,
+                initiative_line=initiative_line,
+                voice_hint=voice_hint,
             )
             if persona_prompt:
                 system = f"{system}\n\n【你的人物设定】\n{persona_prompt}"
@@ -755,6 +791,7 @@ class ProactiveComposer:
             recent_proactive=recent_proactive,
             daylight_fact=daylight.lighting_fact(now_dt),
             image_hint=image_hint,
+            mood_line=mood_line,
         )
         if asleep:
             # 手动强制发送撞上睡眠时段：把「被手机震醒」的场景说清楚，
@@ -778,7 +815,7 @@ class ProactiveComposer:
             settings=settings,
             now_dt=now_dt,
         )
-        return split_segments(text, settings.proactive_max_segments)
+        return split_segments(text, max_segments)
 
     async def _rewrite_if_time_conflicts(
         self,
@@ -898,27 +935,181 @@ class ProactiveComposer:
         return True
 
     # ---------------------------------------------------------------- #
+    # 上下文回填（v1.1.0）
+    # ---------------------------------------------------------------- #
+    @staticmethod
+    def _norm_text(value: Any) -> str:
+        """把 history 里的 content（可能是 str 或多模态 list）压成一行纯文本。"""
+        if isinstance(value, list):
+            value = "".join(
+                str(part.get("text") or "")
+                for part in value
+                if isinstance(part, dict)
+            )
+        return " ".join(str(value or "").split())
+
+    async def ensure_echo_in_context(
+        self, req: Any, persona_id: str, window_minutes: int
+    ) -> str:
+        """确保「角色最近主动发的那条」出现在本轮上下文里；返回补进去的内容。
+
+        为什么必须有这一层：投递后我们确实用 `add_message_pair` 写回了对话历史，
+        但 AstrBot 4.29.4 的每轮结束是**整表覆盖写** conversation.content
+        （`session.py` 用本轮开始时的 history + 本轮消息回写）。只要主动消息的
+        写入与某个 turn 有重叠，那条就会被覆盖掉；写库还会因为「对话被切换/
+        用户新开对话」落到别的 cid 上。用户看到的现象就是：
+            「她主动说了一件事，我追问，她答非所问，还说没发过。」
+        所以不能只依赖写库——每轮请求前比对一次，缺了就补进 `req.contexts`，
+        由 AstrBot 自己在本轮结束落库，天然自愈。
+        """
+        if window_minutes <= 0:
+            return ""
+        try:
+            rows = await self.store.recent_proactive_messages(persona_id, 3)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("mine_chat: 读取最近主动消息失败: %s", exc)
+            return ""
+        if not rows:
+            return ""
+
+        contexts = getattr(req, "contexts", None)
+        if not isinstance(contexts, list):
+            contexts = []
+            try:
+                req.contexts = contexts
+            except Exception:  # noqa: BLE001 - 老版本只读属性
+                return ""
+
+        # 已经在上下文里的（按前 16 字比对）不必再补；顺带建一份「本次要补」的索引，
+        # 避免同一条被补两遍。
+        present: list[str] = []
+        for message in contexts:
+            if not isinstance(message, dict):
+                continue
+            if str(message.get("role")) != "assistant":
+                continue
+            text = self._norm_text(message.get("content"))
+            if text:
+                present.append(text[:16])
+
+        now_ts = time.time()
+        window = window_minutes * 60
+        # rows 是新→旧，倒过来按时间正序补，读起来才顺
+        missing: list[str] = []
+        for row in reversed(rows):
+            try:
+                ts = float(row.get("ts") or 0.0)
+            except (TypeError, ValueError):
+                ts = 0.0
+            if ts <= 0 or now_ts - ts > window:
+                continue
+            content = self._norm_text(row.get("content"))
+            if not content:
+                continue
+            needle = content[:16]
+            if any(needle and needle in existing for existing in present):
+                continue
+            missing.append(content)
+            present.append(needle)
+        if not missing:
+            return ""
+        # 最多补两条：再多会挤占本轮上下文，而「用户回的是哪条」几乎总是最近的
+        missing = missing[-2:]
+        for content in missing:
+            contexts.append({"role": "user", "content": USER_ECHO_PLACEHOLDER})
+            contexts.append({"role": "assistant", "content": content[:1500]})
+        logger.info(
+            "mine_chat: 已把 %d 条最近主动消息回填进上下文 persona=%s",
+            len(missing),
+            persona_id,
+        )
+        return "\n".join(missing)
+
+    # ---------------------------------------------------------------- #
+    # 语音
+    # ---------------------------------------------------------------- #
+    async def send_voice(self, umo: str, text: str, voice: str = "") -> bool:
+        """合成并发送一条语音；失败返回 False，由调用方决定要不要补文字。"""
+        try:
+            return await bridge_mod.speak(self.context, umo, text, voice)
+        except Exception as exc:  # noqa: BLE001 - 语音永远不该把主动消息带崩
+            logger.warning("mine_chat: 语音通道异常，本次不发语音: %s", exc)
+            return False
+
+    # ---------------------------------------------------------------- #
     # 写回历史
     # ---------------------------------------------------------------- #
     async def archive(self, umo: str, texts: list[str]) -> bool:
+        """把刚发出的主动消息写回对话历史，并**读回校验**。
+
+        单次 add_message_pair 不可靠（AstrBot 的 turn 结束会整表覆盖写，
+        且写入不参与它的 session lock）。所以：写 → 读回确认 → 没有就重试一次。
+        真写不进去也不算致命——`ensure_echo_in_context` 每轮会兜住。
+        """
         manager = getattr(self.context, "conversation_manager", None)
         if manager is None:
             return False
         content = "\n".join(texts).strip()
         if not content:
             return False
+        for attempt in range(2):
+            try:
+                cid = await manager.get_curr_conversation_id(umo)
+                if not cid:
+                    cid = await manager.new_conversation(umo, title="萌萌日程 主动消息")
+                if not cid:
+                    return False
+                await manager.add_message_pair(
+                    cid=cid,
+                    user_message={"role": "user", "content": USER_PLACEHOLDER},
+                    assistant_message={"role": "assistant", "content": content},
+                )
+            except Exception as exc:  # noqa: BLE001 - 写回失败不影响已发送的事实
+                logger.warning(
+                    "mine_chat: 主动消息写回历史失败（第 %s 次）umo=%s: %s",
+                    attempt + 1,
+                    umo,
+                    exc,
+                )
+            if await self._history_contains(umo, content):
+                return True
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+        logger.warning(
+            "mine_chat: 主动消息写入历史后读回校验未命中 umo=%s（将由每轮上下文回填补救）",
+            umo,
+        )
+        return False
+
+    async def _history_contains(self, umo: str, content: str) -> bool:
+        """当前对话历史里是否已经有这条（按前 16 字比对）。"""
+        manager = getattr(self.context, "conversation_manager", None)
+        if manager is None:
+            return False
+        needle = self._norm_text(content)[:16]
+        if not needle:
+            return False
         try:
             cid = await manager.get_curr_conversation_id(umo)
             if not cid:
-                cid = await manager.new_conversation(umo, title="萌萌日程 主动消息")
-            if not cid:
                 return False
-            await manager.add_message_pair(
-                cid=cid,
-                user_message={"role": "user", "content": USER_PLACEHOLDER},
-                assistant_message={"role": "assistant", "content": content},
-            )
-            return True
-        except Exception as exc:  # noqa: BLE001 - 写回失败不影响已发送的事实
-            logger.warning("mine_chat: 主动消息写回历史失败 umo=%s: %s", umo, exc)
+            conversation = await manager.get_conversation(umo, cid)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("mine_chat: 读回对话历史失败: %s", exc)
             return False
+        history = getattr(conversation, "history", None)
+        if isinstance(history, str):
+            try:
+                history = json.loads(history)
+            except (json.JSONDecodeError, ValueError):
+                return False
+        if not isinstance(history, list):
+            return False
+        for record in history:
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("role")) != "assistant":
+                continue
+            if needle in self._norm_text(record.get("content")):
+                return True
+        return False

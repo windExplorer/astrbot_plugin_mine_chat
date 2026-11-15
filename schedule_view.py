@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import date as date_cls, datetime
 from typing import Any
 
@@ -134,8 +135,16 @@ def build_injection_block(
     last_proactive: str = "",
     unanswered: int = 0,
     now: datetime | None = None,
+    last_proactive_at: float | None = None,
+    now_ts: float | None = None,
 ) -> str:
-    """渲染注入到对话上下文的日程块；无可用信息时返回空串。"""
+    """渲染注入到对话上下文的日程块；无可用信息时返回空串。
+
+    last_proactive_at / now_ts（v1.1.0）：判断「上一次主动」是不是还该被记住。
+    以前只看 unanswered>0，而用户一开口 unanswered 就归零——于是**用户正是在
+    回那条主动消息时**，注入块里反而把它丢了，模型只能答非所问。现在改成
+    「未回复 或 距上次主动在窗口内」都注入，并明确告诉模型「不要说没发过」。
+    """
     if not items:
         return ""
 
@@ -183,13 +192,6 @@ def build_injection_block(
         if seeds:
             lines.append("【可以顺口提的】" + "；".join(seeds))
 
-    if last_proactive:
-        text = last_proactive.strip().replace("\n", " ")
-        if len(text) > 120:
-            text = text[:120] + "…"
-        extra = "（用户还没回你）" if unanswered > 0 else ""
-        lines.append(f"【你刚才主动发的】{text}{extra}")
-
     if is_sleeping(current_item):
         lines.append("【状态】你现在正在睡觉。用户的消息算是把你吵醒，回复可以带一点迷糊和困意。")
 
@@ -198,10 +200,49 @@ def build_injection_block(
         "被问到再自然地说出来，不要像念行程表。"
     )
 
-    block = "\n".join(lines)
+    # 回填块单独拿出来：它决定「这轮能不能对上话」，比日程细节重要得多，
+    # 所以字数不够时宁可截日程，也不能把它截掉（曾经整段被 600 字上限吃掉，
+    # 于是用户追问主动消息时模型只能编）。
+    echo_block = ""
+    if last_proactive:
+        fresh = unanswered > 0
+        if not fresh and last_proactive_at:
+            window = max(0, settings.inject_echo_window_minutes) * 60
+            current_ts = now_ts if now_ts is not None else time.time()
+            try:
+                fresh = window > 0 and (current_ts - float(last_proactive_at)) <= window
+            except (TypeError, ValueError):
+                fresh = False
+        if fresh:
+            text = " ".join(last_proactive.split())
+            if len(text) > 160:
+                text = text[:160] + "…"
+            when = ""
+            if last_proactive_at:
+                try:
+                    when = datetime.fromtimestamp(float(last_proactive_at)).strftime("%H:%M")
+                except (TypeError, ValueError, OSError):
+                    when = ""
+            stamp = f"（{when} 发的）" if when else ""
+            note = "（用户还没回）" if unanswered > 0 else "（用户现在很可能就是在回它）"
+            echo_block = (
+                f"【你上一次主动发给对方的消息】{stamp}「{text}」{note}\n"
+                "（这是你自己发出去的原话，不是对方说的。对方问的就是它，顺着答；"
+                "绝不要说「我没发过」「我没说过」。）"
+            )
+
+    body = "\n".join(lines)
+    block = f"{body}\n{echo_block}" if echo_block else body
     limit = settings.inject_max_chars
     if limit and len(block) > limit:
-        block = block[:limit].rstrip() + "…"
+        if echo_block:
+            # 正文先让位；echo 段完整保留（这是刻意允许略超上限的）
+            budget = max(160, limit - len(echo_block) - 2)
+            if len(body) > budget:
+                body = body[:budget].rstrip() + "…"
+            block = f"{body}\n{echo_block}"
+        else:
+            block = block[:limit].rstrip() + "…"
     return block
 
 

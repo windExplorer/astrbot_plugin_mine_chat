@@ -83,6 +83,12 @@
         "hint": "把日程条目里的「可分享碎片」也告诉模型，让它有具体的小事可说（主动消息有话可讲的来源）。",
         "type": "bool",
         "default": true
+      },
+      "echo_window_minutes": {
+        "description": "记住「上一次主动说了什么」（分钟）",
+        "hint": "角色主动发过消息后，在这个时间窗内每次回复都会把它带进上下文（并明确告诉她「这是你自己发的」）。设为 0 可关闭。这是「用户追问时她答非所问、还说自己没发过」的主要修复点——原来只在她还没被回复时才带，而用户一开口那个条件就失效了。",
+        "type": "int",
+        "default": 360
       }
     }
   },
@@ -181,6 +187,12 @@
         "hint": "不希望出现在日程里的内容，例如「不要写工作压力」「不要涉及暴力」。一行一条。",
         "type": "text",
         "default": ""
+      },
+      "use_affinity": {
+        "description": "参考好感度档位",
+        "hint": "装了「萌萌好感度」时，让关系档位与情绪四轴影响日程的细节（关系近时生活里会有「为对方留一份」的痕迹，情绪低落时整天基调偏低）。没装或还没建档会自动跳过，不影响生成。",
+        "type": "bool",
+        "default": true
       }
     }
   },
@@ -401,6 +413,50 @@
         "hint": "开启后，命中了配图（或表情）却拿不到图时不再整条取消，而是降级为纯文字发出去（本条不带图）。关闭（默认）时维持原行为：一条「说要发图却没有图」的消息比什么都不说更出戏，所以整条取消、留待下次。对生图与表情包两条通道同时生效。",
         "type": "bool",
         "default": false
+      },
+      "voice_enabled": {
+        "description": "主动消息可以发语音",
+        "hint": "联动 CosyVoice3（astrbot_plugin_cosyvoice）：偶尔真的「开口说一句」。未安装 / 未启用 / 没有可用音色 / 服务端冷却中时自动跳过，文字照发。语音与配图、表情互斥——同一条消息只承载一种媒体，图和表情优先。",
+        "type": "bool",
+        "default": false
+      },
+      "voice_probability": {
+        "description": "语音概率",
+        "hint": "每次主动消息命中语音的概率（0~1）。0.2 = 大约每五次一次。",
+        "type": "float",
+        "default": 0.2
+      },
+      "voice_max_per_day": {
+        "description": "每日语音上限",
+        "hint": "每天最多发几条语音（0 = 不限制），与配图/表情的每日上限独立计数。",
+        "type": "int",
+        "default": 2
+      },
+      "voice_name": {
+        "description": "语音音色",
+        "hint": "留空 = 用 CosyVoice 插件自己的默认音色。填音色名可指定（例如按角色固定一个音色）。",
+        "type": "string",
+        "default": ""
+      },
+      "voice_mode": {
+        "description": "语音发送方式",
+        "hint": "append = 文字照发，后面再补一条语音（安全）；replace = 只发语音、不再重复文字（更像真人，合成失败会自动把文字补发）。",
+        "type": "string",
+        "options": ["append", "replace"],
+        "labels": ["文字 + 语音", "只发语音（失败补文字）"],
+        "default": "append"
+      },
+      "use_affinity": {
+        "description": "参考好感度关系层",
+        "hint": "装了「萌萌好感度」时，把关系档位（陌生/眼熟/熟悉/亲近/亲密/羁绊）映射成「这次主动该有多主动」，并把此刻情绪（愉悦/烦躁/低落/不安）带给文案。没装或未建档时自动跳过。",
+        "type": "bool",
+        "default": true
+      },
+      "affinity_event": {
+        "description": "把主动发言记进好感度",
+        "hint": "开启后每次主动消息都往好感度流水里写一条来源为 mine_chat 的事件（不占对方的每日额度）。默认关闭：好感度应当由用户真实互动产生，主动消息不该自己给自己加分。",
+        "type": "bool",
+        "default": false
       }
     }
   },
@@ -417,7 +473,7 @@
       },
       "proactive": {
         "description": "自定义主动消息提示词",
-        "hint": "填写后完全替换内置的主动消息生成提示词（作为系统提示词；用户侧上下文仍由插件组装）。可用占位符 {persona} {current_block} {seed} {recent_chat} {last_proactive} {unanswered} {now} {daylight_fact} {extra}。注意：用户侧上下文里始终会带上【此刻时段】与【天色铁律】，覆盖系统提示词不会丢掉时间一致性约束。",
+        "hint": "填写后完全替换内置的主动消息生成提示词（作为系统提示词；用户侧上下文仍由插件组装）。可用占位符 {persona} {current_block} {seed} {recent_chat} {last_proactive} {recent_proactive} {unanswered} {now} {daylight_fact} {image_hint} {relation_hint} {relation_line} {mood_line} {voice_hint} {extra}。注意：用户侧上下文里始终会带上【此刻时段】与【天色铁律】，覆盖系统提示词不会丢掉时间一致性约束。",
         "type": "text",
         "default": ""
       }
