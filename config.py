@@ -203,7 +203,9 @@ class Settings:
     proactive_jitter_minutes: int = 20
     proactive_max_segments: int = 3
     proactive_segment_delay: float = 1.5
-    proactive_history_messages: int = 10
+    # 10 条 = 5 轮，接话题经常不够用（模型看不到用户上一句在问什么）；
+    # 16 条正好是「一个话题从提出到收尾」的常见长度。
+    proactive_history_messages: int = 16
     proactive_model: str = ""
     proactive_extra_instruction: str = ""
     # 生成后时段校验：文案/出图提示词里出现与此刻时段矛盾的描写时带纠偏重写一次
@@ -426,8 +428,8 @@ class Settings:
                 10.0,
             ),
             proactive_history_messages=to_int(
-                pick(proactive, "history_messages", "proactive_history_messages", 10),
-                10,
+                pick(proactive, "history_messages", "proactive_history_messages", 16),
+                16,
                 0,
                 50,
             ),

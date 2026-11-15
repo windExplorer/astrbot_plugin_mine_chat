@@ -488,7 +488,11 @@ PROACTIVE_USER_TEMPLATE = """【现在的时间】{now}
 {daylight_fact}
 【你此刻的状态】{current_block}
 {mood_line}【可以顺口提的小事】{seed}
-{relation_line}【你们最近的对话】{recent_chat}
+{relation_line}【你们最近的对话】
+{recent_chat}
+（以上是最近几条对话的摘要。以「用户：」开头的是对方说的话；「（你主动发了下面这条）」
+表示紧接着那条是**你自己**主动开口的，不是对方说的；「你：」开头的是你说过的话。
+最近一条距现在多久见上面的时间锚，别把几天前的对话当成刚刚发生。）
 【你最近主动发过的（别再重复这些内容和句式）】{recent_proactive}{image_hint}
 """
 

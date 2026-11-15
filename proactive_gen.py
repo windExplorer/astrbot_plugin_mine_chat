@@ -35,6 +35,54 @@ USER_PLACEHOLDER = "(主动发起)"
 # 否则它会把占位当成用户的开场白，反而更糊涂。
 USER_ECHO_PLACEHOLDER = "（以下是角色自己刚才主动发出去的消息，不是对方说的）"
 
+# 历史里属于「我们自己的注入」的起点标记：从这些词开始的整段都不是用户说的话。
+# 日程注入块（v1.2.1 之前会落库）、回填块、主动消息生成时的说明都可能在里面。
+_INJECTION_MARKERS = (
+    "【现在的时间】",
+    "【你此刻】",
+    "【刚才】",
+    "【稍后】",
+    "【可以顺口提的】",
+    "【你上一次主动发给对方的消息】",
+    "【状态】你现在正在睡觉",
+    "【今天的日照边界】",
+    "【作息参考】",
+    "【日程风格】",
+    "【你们最近的对话】",
+    "以上是你自己的生活设定",
+)
+_ECHO_PREFIX = USER_ECHO_PLACEHOLDER[:14]
+_HISTORY_TEXT_LIMIT = 300
+
+
+def strip_injected_block(text: str) -> str:
+    """裁掉粘在用户消息后面的注入块（从第一个注入标记起全部丢弃）。"""
+    raw = " ".join(str(text or "").split())
+    cut = len(raw)
+    for marker in _INJECTION_MARKERS:
+        index = raw.find(marker)
+        if 0 <= index < cut:
+            cut = index
+    return raw[:cut].strip()
+
+
+def clean_history_line(role: str, content: str) -> str:
+    """一条历史记录 → 一行可读对话；空串表示这条没有可用的对话内容。
+
+    两种占位必须渲染成旁白而不是「用户：」。模型的分不清「用户说的」和
+    「系统塞进来的」正是「牛头不对马嘴」的来源之一。
+    """
+    body = strip_injected_block(content)
+    if not body:
+        return ""
+    if role == "user":
+        if body == USER_PLACEHOLDER:
+            return "（你主动发了下面这条）"
+        if body.startswith(_ECHO_PREFIX):
+            return "（你此前主动发过下面这条）"
+        return f"用户：{body[:_HISTORY_TEXT_LIMIT]}"
+    return f"你：{body[:_HISTORY_TEXT_LIMIT]}"
+
 IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
 
 
@@ -584,6 +632,16 @@ class ProactiveComposer:
     # 上下文
     # ---------------------------------------------------------------- #
     async def recent_chat(self, umo: str, limit: int) -> str:
+        """读取投递窗口最近若干条对话，转成主动消息生成用的纯文本。
+
+        注意这里读的是 AstrBot 的 conversation.history —— 里面混着三类**不是对话**
+        的东西，必须清洗掉，否则主动消息会「牛头不对马嘴」：
+        1. 日程注入块（历史里可能残留，见 main._apply_injection 的注释）；
+        2. 我们自己写的 `(主动发起)` 占位（archive 用）；
+        3. v1.1.0 的上下文回填占位（USER_ECHO_PLACEHOLDER）。
+        2、3 渲染成旁白，而不是伪装成「用户说：…」——以前模型真的会把
+        `(主动发起)` 当成用户发来的一句话。
+        """
         if limit <= 0:
             return ""
         manager = getattr(self.context, "conversation_manager", None)
@@ -621,11 +679,9 @@ class ProactiveComposer:
                     for part in content
                     if isinstance(part, dict)
                 )
-            text = " ".join(str(content or "").split())
-            if not text:
-                continue
-            speaker = "你" if role == "assistant" else "用户"
-            lines.append(f"{speaker}：{text[:200]}")
+            line = clean_history_line(str(role), str(content or ""))
+            if line:
+                lines.append(line)
         return "\n".join(lines)
 
     def block_for_prompt(self, item: dict[str, Any] | None) -> str:

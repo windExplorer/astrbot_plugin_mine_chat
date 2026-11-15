@@ -306,6 +306,44 @@ def test_prompt_placeholders(c: Checker) -> None:
     c.check("不完美要求进了提示词", "半途而废" in body)
 
 
+# --------------------------------------------------------------------------- #
+# 6. 主动消息读上下文时的清洗
+# --------------------------------------------------------------------------- #
+def test_history_cleanup(c: Checker) -> None:
+    print("\n[6] 主动消息的对话摘要清洗")
+    ns = load_defs(
+        "proactive_gen.py",
+        {
+            "clean_history_line",
+            "strip_injected_block",
+            "USER_PLACEHOLDER",
+            "USER_ECHO_PLACEHOLDER",
+            "_INJECTION_MARKERS",
+            "_ECHO_PREFIX",
+            "_HISTORY_TEXT_LIMIT",
+        },
+    )
+    clean = ns["clean_history_line"]
+    strip = ns["strip_injected_block"]
+    placeholder = ns["USER_PLACEHOLDER"]
+    echo = ns["USER_ECHO_PLACEHOLDER"]
+
+    dirty = "今天好冷啊\n【现在的时间】2026-11-16 14:35\n【你此刻】在窗边看书（心情：安静）\n以上是你自己的生活设定"
+    c.equal(
+        "注入块被裁掉",
+        strip(dirty),
+        "今天好冷啊",
+    )
+    c.equal("用户原话保留", clean("user", dirty), "用户：今天好冷啊")
+    c.equal("角色发言保留", clean("assistant", "嗯，雪下了一天"), "你：嗯，雪下了一天")
+    c.equal("主动发起占位渲染成旁白", clean("user", placeholder), "（你主动发了下面这条）")
+    c.equal("回填占位渲染成旁白", clean("user", echo), "（你此前主动发过下面这条）")
+    c.equal("纯注入记录被丢弃", clean("user", "【现在的时间】2026-11-16 14:35"), "")
+    c.equal("空内容被丢弃", clean("assistant", "   "), "")
+    c.check("长文本被截断", len(clean("user", "字" * 500)) <= 305)
+    c.equal("普通短句不误伤", clean("user", "我刚回来"), "用户：我刚回来")
+
+
 def main() -> int:
     c = Checker()
     test_season_weather(c)
@@ -313,6 +351,7 @@ def main() -> int:
     test_categories(c)
     test_flavor_rotation(c)
     test_prompt_placeholders(c)
+    test_history_cleanup(c)
     print(f"\n共 {c.count} 项断言，失败 {len(c.failures)} 项")
     if c.failures:
         print("失败项：")

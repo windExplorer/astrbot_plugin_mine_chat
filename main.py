@@ -423,14 +423,29 @@ class MineChatPlugin(Star):
 
     @staticmethod
     def _apply_injection(req: Any, block: str, settings: config_mod.Settings) -> None:
+        """把日程块挂到本轮请求上；**绝不写进对话历史**。
+
+        这里曾经裸 append `{"type": "text", "text": block}`，而 AstrBot 只有在
+        `_no_save` / `mark_as_temp()` 时才会把它当作「只给模型看、不入库」
+        （`astrbot/core/agent/message.py` 的 ContentPart）。裸 dict 会被持久化进
+        conversation.history —— 于是每一轮历史里都多出一整块【现在的时间】【你此刻】…
+        后果有两个：token 暴涨；以及主动消息生成读取最近对话时（`recent_chat`）
+        把注入块当成「用户说的话」，回出来的内容自然牛头不对马嘴。
+        """
         if settings.inject_mode == "system":
             req.system_prompt = f"{req.system_prompt or ''}\n\n{block}"
             return
         parts = getattr(req, "extra_user_content_parts", None)
         if isinstance(parts, list):
-            parts.append({"type": "text", "text": block})
-        else:
-            req.system_prompt = f"{req.system_prompt or ''}\n\n{block}"
+            try:
+                from astrbot.core.agent.message import TextPart  # type: ignore
+
+                parts.append(TextPart(text=block).mark_as_temp())
+                return
+            except Exception as exc:  # noqa: BLE001 - 版本差异时退回 system
+                logger.debug("mine_chat: TextPart 不可用，注入改走 system: %s", exc)
+        # 退路必须是 system_prompt：它天然不入对话历史
+        req.system_prompt = f"{req.system_prompt or ''}\n\n{block}"
 
     def _ensure_plan_background(self, persona_id: str, umo: str = "") -> None:
         if persona_id in self._gen_pending or self._terminating:
