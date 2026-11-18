@@ -1,5 +1,30 @@
 # 更新日志
 
+## v1.2.4（媒体失败不该吞掉文字：删掉「整条取消」，配图/表情失败也照发文字）
+
+**用户问题**：「语音服务失败了为什么就不发送消息了，同理绘图失败了也应该要发送啊——
+不应该语音和图片没生成就不发送了，还有文字消息啊，图片不发送也可以啊。」
+
+**根因**：语音其实早有兜底（`send_voice` 失败返回 False，`replace` 模式补文字、`append`
+模式先发文字），真正吞掉整条消息的是配图/表情通道。命中了配图（25%）或表情（15%）却拿不到图时，
+`_do_send` 里 `proactive_media_fallback_text` 默认为 False → 落 `media_failed` 后
+**直接 return，连文字一起取消**；而且这个 return 在语音规划之前，语音也跟着一起没了。
+用户看到的「语音/图片失败就什么都不发」就是这么来的。老配置里这个键已被写成 false，
+所以单改默认值也救不了已安装实例。
+
+**改动**（与 v1.2.3 撤销 `voice_with_media` 同一处理）：
+
+- `proactive.py` 删除 `media_failed` 整条取消分支：配图/表情失败一律落
+  `img_fallback` / `sticker_fallback` 后继续走文字发送，一条主动消息至少把话说出来。
+- 删除已无意义的 `proactive.media_fallback_text` 开关：`config.py` 字段与读取、
+  `_conf_schema.json` 节点、`proactive.py` 判定全部移除；老配置里残留的键会被忽略，
+  升级后行为立即生效，无需改配置。
+- `media_failed` / `voice_yield` 等原因码文案在 `main.py` 与 `api.ts` 保留，
+  只为让历史日志仍可读，v1.2.4 起不再产生。
+
+**自检**：`test_core_logic.py` 相关断言改为验证开关已删除、老配置残留键被忽略、
+`img_fallback`/`sticker_fallback` 仍写、`media_failed` 整条取消确已移除。
+
 ## v1.2.3（撤销「语音与图互斥」：用户说得对，本来就不冲突）
 
 **用户纠正**：「不对劲哦，语音和图像不冲突啊。」

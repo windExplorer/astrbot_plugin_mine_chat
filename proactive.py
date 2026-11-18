@@ -490,7 +490,7 @@ class ProactiveService:
         )
         # 表情包是独立通道（独立概率/独立计数）；生图命中时让位，同一条消息只附一张图。
         # 注意：sticker_hit/sticker_note 必须先初始化——生图命中的让位分支不赋值，
-        # 下面的 media_failed 判定两个分支都会读它们。
+        # 下面的媒体失败降级判定两个分支都会读它们。
         sticker_path = sticker_url = ""
         sticker_hit = False
         sticker_note = ""
@@ -507,44 +507,32 @@ class ProactiveService:
                 persona_id, "sticker", "sticker_yield", umo, throttle=True
             )
 
-        # 命中了媒体（角色想要发图/表情）却没拿到：
-        # 默认整条取消，文字也不发——「说了一段话却没带上图」比「什么都没说」更出戏。
-        # 打开「配图/表情获取失败时仍发文字」（proactive.media_fallback_text）后，
-        # 降级为纯文字继续走完本次主动（本条不带图），至少把这次机会用掉。
+        # 命中了媒体（角色想要发图/表情）却没拿到：一律降级为纯文字继续发（v1.2.4）。
+        # 文字才是主体，图/表情/语音都只是点缀——媒体没生成不该把整句话一起吞掉。
+        # 老版本有 media_failed「整条取消」的设计（还要用户手动开开关才降级），
+        # 实测正是「语音/图片失败就什么都不发」的来源，已撤销。
         # 注意：生图命中但出图失败时 image_plan 为 None，表情通道会被照常掷骰，
         # 所以「配图失败」与「表情失败」可能同时成立，两条日志都要落。
         image_missing = image_hit and not (image_plan and image_plan.get("path"))
         sticker_missing = sticker_hit and not (sticker_path or sticker_url)
-        if image_missing or sticker_missing:
-            if not settings.proactive_media_fallback_text:
-                media_notes: list[str] = []
-                if image_missing:
-                    media_notes.append(f"配图：{image_note or '获取失败'}")
-                if sticker_missing:
-                    media_notes.append(f"表情：{sticker_note or '获取失败'}")
-                await self._record(
-                    persona_id, "skip", "media_failed", umo, content="；".join(media_notes)
-                )
-                await self._reschedule(persona_id)
-                return False, "media_failed"
-            if image_missing:
-                await self._record(
-                    persona_id,
-                    "img",
-                    "img_fallback",
-                    umo,
-                    content=f"配图：{image_note or '获取失败'}",
-                    throttle=True,
-                )
-            if sticker_missing:
-                await self._record(
-                    persona_id,
-                    "sticker",
-                    "sticker_fallback",
-                    umo,
-                    content=f"表情：{sticker_note or '获取失败'}",
-                    throttle=True,
-                )
+        if image_missing:
+            await self._record(
+                persona_id,
+                "img",
+                "img_fallback",
+                umo,
+                content=f"配图：{image_note or '获取失败'}",
+                throttle=True,
+            )
+        if sticker_missing:
+            await self._record(
+                persona_id,
+                "sticker",
+                "sticker_fallback",
+                umo,
+                content=f"表情：{sticker_note or '获取失败'}",
+                throttle=True,
+            )
 
         # 语音通道：与配图/表情**互不影响**（v1.2.3 起）。
         # 曾经做成「一条消息只承载一种媒体」，图命中就让语音让位（voice_yield）——
@@ -778,7 +766,7 @@ class ProactiveService:
 
         返回 (配图计划 | None, 是否「命中想要图」, 失败说明)。
         hit=True 表示本次掷骰已命中（角色想要发图）——若最终没拿到图，
-        调用方应整条取消消息（media_failed），而不是发一条纯文字。
+        调用方降级为纯文字继续发（img_fallback），不再整条取消。
 
         掷骰与每日上限对所有后端一致；anima 出图耗时较长（最长 180s），
         拉图期间用户插嘴由 _do_send 现有的 last_user_at 检测兜住。
@@ -960,8 +948,8 @@ class ProactiveService:
 
         返回 (本地路径 | "", 票券链 URL | "", 是否「命中想要表情」, 失败说明, moe_meme 是否不可用)。
         hit=True 表示掷骰已命中且 moe_meme 可用——若最终图/URL 都没拿到，
-        调用方应整条取消消息。moe_meme 不可用（no_api）时通道视为未命中，
-        文字照发（没装插件不该惩罚文字消息）。
+        调用方降级为纯文字继续发（sticker_fallback），不再整条取消。
+        moe_meme 不可用（no_api）时通道视为未命中，文字照发（没装插件不该惩罚文字消息）。
 
         调用方保证：生图命中时不再调用本函数（同一条消息只附一张图，
         生图优先——表情包让位且不消耗当日计数，让位本身由调用方落日志）。

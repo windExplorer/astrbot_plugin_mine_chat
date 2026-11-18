@@ -152,19 +152,18 @@ def test_settings(c: Checker) -> None:
     c.equal("表情包独立日限", sticker.proactive_sticker_max_per_day, 2)
     c.equal("生图后端不再含表情包", sticker.proactive_image_backend, "local")
 
-    # 媒体失败降级（配图/表情拿不到图时是否仍发文字）
+    # v1.2.4：媒体失败一律降级发文字，开关已删除；老配置残留键不得影响行为
     c.check(
-        "默认不降级（图文一致优先，整条取消）",
-        not config_mod.Settings.from_config({}).proactive_media_fallback_text,
+        "Settings 不再有 media_fallback_text 字段",
+        not hasattr(config_mod.Settings.from_config({}), "proactive_media_fallback_text"),
     )
-    fallback = config_mod.Settings.from_config(
-        {"proactive": {"media_fallback_text": True}}
+    stale_cfg = config_mod.Settings.from_config(
+        {"proactive": {"media_fallback_text": False}, "proactive_media_fallback_text": False}
     )
-    c.check("降级开关可开", fallback.proactive_media_fallback_text)
-    flat_fallback = config_mod.Settings.from_config(
-        {"proactive_media_fallback_text": "是"}
+    c.check(
+        "老配置残留开关键被忽略（无字段可写）",
+        not hasattr(stale_cfg, "proactive_media_fallback_text"),
     )
-    c.check("平铺键兜底可开", flat_fallback.proactive_media_fallback_text)
 
     # 嵌套分组读取（v1.0.4 起的配置结构）
     nested = config_mod.Settings.from_config(
@@ -751,13 +750,13 @@ def test_image_backends(c: Checker) -> None:
     c.check("不得再传伴侣插件的口令", "我会永远陪着你" not in pg_src)
     c.equal("点开头扩展名", meme_cache_filename("id", ".gif"), "id.gif")
 
-    # 媒体失败降级分支必须仍在（开关打开时走纯文字，关闭时整条取消）
+    # v1.2.4：媒体失败一律降级发文字；整条取消与开关均已删除
     with open(os.path.join(ROOT, "proactive.py"), "r", encoding="utf-8") as handle:
         pr_src = handle.read()
-    c.check("降级开关被读取", "proactive_media_fallback_text" in pr_src)
+    c.check("不再读取已删除的降级开关", "proactive_media_fallback_text" not in pr_src)
     c.check("降级写 img_fallback", "img_fallback" in pr_src)
     c.check("降级写 sticker_fallback", "sticker_fallback" in pr_src)
-    c.check("关闭时仍保留 media_failed", "media_failed" in pr_src)
+    c.check("media_failed 整条取消已删除", '"media_failed"' not in pr_src)
 
     # 绘图提示词生成（静默，含画风与语种/类型约束）
     import prompts as prompts_mod
