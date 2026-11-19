@@ -1,5 +1,31 @@
 # 更新日志
 
+## v1.3.0（语音联动从 CosyVoice 私有复用切到萌萌语音 tts.v1 契约）
+
+**需求**：用户把关联的语音插件从 CosyVoice3 换成了萌萌语音（`astrbot_plugin_moe_tts`）。
+
+**根因**：旧 `bridge.py` 把语音写死在 CosyVoice 上——`VOICE_PLUGIN = "astrbot_plugin_cosyvoice"`、
+复用私有 `engine.synthesize(...) -> 单 wav 路径`、读 `_server_cooldown_until` / `last_failure` /
+`list_voices()`、清理还 import `astrbot_plugin_cosyvoice.utils.audio`。换个语音插件后这些私有属性
+一个都不存在，每一步都被 `hasattr` / try-except 吞掉 → 语音**全部静默降级**为纯文字。
+
+**改动**（moe_tts 侧先加了通用契约 `tts.v1`，本插件是消费方）：
+
+- `bridge.py` 的语音链路整体重写为走契约：`get_voice_plugin` → `get_voice_api`（保留旧名别名），
+  只认 `astrbot_plugin_moe_tts` 的 `star_cls.api` 且 `API_VERSION == "tts.v1"`，否则降级；
+  `voice_available()` 调 `api.available()`；`synthesize()` 调 `api.synthesize(pre_translated=True)`
+  拿 `files` 路径列表（一段或多段）、加 `wait_for` 超时兜底，失败/异常返回空列表不外抛；
+  `schedule_cleanup()` 优先走 `api.cleanup()`，拿不到契约就自己延迟删。
+- `speak()` 改为逐段发送 `Record`（契约可能一次返回多段 wav），任一段失败返回 False，
+  上层按既有逻辑补发文字兜底；清理时把 context 传下去以便走契约。
+- 全插件文案更新：`_conf_schema.json` 的语音开关/音色 hint、`main.py` 的 `voice_no_api` 原因码、
+  `proactive.py` 的规划日志、`README.md` 的联动表与「已知边界」——CosyVoice3 一律改为萌萌语音。
+- 历史 CHANGELOG 条目与 `store.py` 的 v1.1.0 迁移注释**保持原样**（它们记录的是当时的史实）。
+
+**自检**：新增 `tests/test_tts_bridge.py`（20 项：契约校验 / 版本不符降级 / available /
+多段路径 / 失败不外抛 / 文案清洗 / pre_translated 透传），AST 抠真代码驱动；
+原有 core 337 + v110 71 + schema + store_migration 全过。未新增顶层模块，打包清单无需改。
+
 ## v1.2.4（媒体失败不该吞掉文字：删掉「整条取消」，配图/表情失败也照发文字）
 
 **用户问题**：「语音服务失败了为什么就不发送消息了，同理绘图失败了也应该要发送啊——

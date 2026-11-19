@@ -609,12 +609,12 @@ class MineChatPlugin(Star):
             "sticker_fallback": "表情拉取失败，已降级为纯文字发送（本条不带表情）",
             "sticker_no_api": "萌萌表情包不可用（未装/停用/版本低于 v0.2.0）",
             "sticker_yield": "表情让位给了配图（一条消息只带一张图）",
-            # 语音通道（decision=voice，CosyVoice3 联动）
+            # 语音通道（decision=voice，萌萌语音 tts.v1 联动）
             "voice_ok": "这条是语音",
             "voice_off": "语音未开启或概率为 0",
             "voice_dice": "语音掷骰未命中",
             "voice_limit": "今日语音已达上限",
-            "voice_no_api": "CosyVoice 不可用（未安装/未启用/没有可用音色/服务端冷却中）",
+            "voice_no_api": "萌萌语音不可用（未安装/未提供 tts.v1 契约/没有可用音色/服务端冷却中）",
             "voice_yield": "语音让位给了配图或表情（v1.2.3 起两者不再互斥，"
             "这条只出现在旧日志里）",
             "voice_fallback": "语音合成或发送失败，已降级为文字",

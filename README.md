@@ -158,7 +158,7 @@ AstrBot 插件页 **萌萌日程**（`pages/schedule-console/`）：
 | 插件 | 用在哪 | 拿不到时 |
 | --- | --- | --- |
 | **萌萌好感度** `astrbot_plugin_moe_affinity`（契约 `affinity.v1`） | ① 关系档位（陌生/眼熟/熟悉/亲近/亲密/羁绊）→ 日程里有没有「为对方留一份」的细节、主动消息这次该有多主动；② 情绪四轴 → 当天的情绪底色与文案语气 | 不加任何相关段落，完全按人格自己判断 |
-| **CosyVoice3** `astrbot_plugin_cosyvoice` | 主动消息偶尔真的「开口说一句」：概率 / 每日上限 / 音色 / `append` 或 `replace` 可配 | 只发文字；合成失败自动补发文字 |
+| **萌萌语音** `astrbot_plugin_moe_tts`（契约 `tts.v1`） | 主动消息偶尔真的「开口说一句」：概率 / 每日上限 / 音色 / `append` 或 `replace` 可配 | 只发文字；合成失败自动补发文字 |
 
 三条边界：
 
@@ -251,7 +251,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build_zip.ps1
 ## 已知边界（v1）
 
 - 群聊只共享日程、不主动发言；多用户 / 多人格并发未做验证。
-- 语音与 TTS 不支持。
+- 语音依赖萌萌语音插件（`tts.v1` 契约），本插件自身不含 TTS 引擎；未安装时自动降级为纯文字。
 - 不做用户作息学习、天气、位置、细化剧本与观察对账（这些是参考项目的重武器，本插件刻意做减法）。
 - `schedule_forbidden` 只处理公历固定节日，不含农历节日（春节、端午、中秋等）。
 

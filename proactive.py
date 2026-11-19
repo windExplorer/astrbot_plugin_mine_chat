@@ -1000,7 +1000,7 @@ class ProactiveService:
     async def _plan_voice(
         self, persona_id: str, settings: Settings, state: dict[str, Any]
     ) -> tuple[dict[str, Any] | None, bool, str]:
-        """决定这次要不要发语音（CosyVoice3 联动）。
+        """决定这次要不要发语音（萌萌语音 tts.v1 联动）。
 
         返回 (语音计划 | None, 是否命中, 失败说明)。
         与配图/表情互斥（一条消息只承载一种媒体，语音优先让位给已经在掷骰里
@@ -1028,7 +1028,7 @@ class ProactiveService:
                 "voice",
                 "voice_no_api",
                 "",
-                content="CosyVoice 未安装 / 未启用 / 没有可用音色 / 服务端冷却中",
+                content="萌萌语音未安装 / 未安装 tts.v1 契约 / 没有可用音色 / 服务端冷却中",
                 throttle=True,
             )
             return None, False, "语音插件不可用"

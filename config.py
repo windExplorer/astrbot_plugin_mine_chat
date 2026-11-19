@@ -234,7 +234,7 @@ class Settings:
     proactive_sticker_probability: float = 0.15
     proactive_sticker_max_per_day: int = 2
 
-    # 主动消息语音（CosyVoice3 联动）——「真的开口说一句」，与图/表情互斥
+    # 主动消息语音（萌萌语音 tts.v1 联动）——「真的开口说一句」
     proactive_voice_enabled: bool = False
     proactive_voice_probability: float = 0.2
     proactive_voice_max_per_day: int = 2

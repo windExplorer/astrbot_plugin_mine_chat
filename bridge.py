@@ -1,4 +1,4 @@
-"""跨插件桥：萌萌好感度（affinity.v1）与 CosyVoice3 语音。
+"""跨插件桥：萌萌好感度（affinity.v1）与萌萌语音（tts.v1）。
 
 为什么单独一个模块：这两个联动都是**可选**的，装没装、启没启、版本够不够
 都不该让主功能（日程 / 主动消息）崩。集中到一个文件里，所有降级逻辑只写一遍，
@@ -15,9 +15,15 @@
 **只读**：角色「主动发了一条」不该给自己加分——好感度是用户互动产生的。
 写事件需要显式配置开启，且 source 不用 "core"（不占每日额度）。
 
-语音 `astrbot_plugin_cosyvoice` **没有对外契约**，只能复用插件实例上的
-`engine.synthesize(text, voice) -> wav 路径 | None`。这是私有属性复用，
-所以每一步都 hasattr + try/except，任何一环不对就静默降级为纯文字。
+语音 `astrbot_plugin_moe_tts`（萌萌语音）有正式契约 `tts.v1`：
+    star = context.get_registered_star("astrbot_plugin_moe_tts")
+    api = star.star_cls.api          # TtsApi
+    api.available()                  # 同步：配了服务端 / 没冷却 / 有音色
+    res = await api.synthesize(text, voice, pre_translated=True)
+    # res = {ok, files:[wav路径...], error, ...}；失败 ok=False 不抛异常
+    api.cleanup(path)                # 延迟清理合成产物
+每一步都做版本 / 结构校验 + try/except，任何一环不对就静默降级为纯文字。
+（v1.3.0 前复用的是 CosyVoice 的私有 engine；换成 tts.v1 契约后调用方零依赖对方内部实现。）
 """
 
 from __future__ import annotations
@@ -25,7 +31,6 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,12 +38,13 @@ from astrbot.api import logger
 
 AFFINITY_PLUGIN = "astrbot_plugin_moe_affinity"
 AFFINITY_API_VERSION = "affinity.v1"
-VOICE_PLUGIN = "astrbot_plugin_cosyvoice"
+VOICE_PLUGIN = "astrbot_plugin_moe_tts"
+VOICE_API_VERSION = "tts.v1"
 
-# 合成超时：CosyVoice 默认并发 1，长文本会串行排队；主动消息不等太久。
+# 合成超时：语音服务端默认并发 1，长文本会串行排队；主动消息不等太久。
 VOICE_TIMEOUT = 90.0
-# 合成产物落在系统临时目录且插件不会替我们清理（它只在自家发送链路里登记清理），
-# 这里延迟删除，给平台读文件留出时间。
+# 契约的 cleanup() 默认 600s 清理；这里覆盖成 120s（主动消息场景无需留那么久），
+# 给平台读文件留出时间即可。
 VOICE_CLEANUP_DELAY = 120.0
 
 
@@ -332,8 +338,12 @@ def clean_tts_text(text: Any) -> str:
     return cleaned[:220]
 
 
-def get_voice_plugin(context: Any) -> Any | None:
-    """取 CosyVoice 插件实例（用于复用其 engine）；不可用返回 None。"""
+def get_voice_api(context: Any) -> Any | None:
+    """取萌萌语音的 tts.v1 契约对象（star_cls.api）；不可用返回 None。
+
+    与好感度 affinity.v1 同范式：只认契约对象，不碰对方任何内部属性，
+    所以对方内部重构（engine 改名、router 改造）都不会波及这里。
+    """
     getter = getattr(context, "get_registered_star", None)
     if not callable(getter):
         return None
@@ -344,118 +354,86 @@ def get_voice_plugin(context: Any) -> Any | None:
         return None
     if star is None or not getattr(star, "activated", False):
         return None
-    plugin = getattr(star, "star_cls", None)
-    engine = getattr(plugin, "engine", None)
-    if plugin is None or engine is None or not hasattr(engine, "synthesize"):
-        # 结构变了（版本过低/重命名）——静默降级，别让用户以为插件坏了
-        logger.debug("mine_chat: 语音插件结构与预期不符，跳过语音联动")
+    api = getattr(getattr(star, "star_cls", None), "api", None)
+    if api is None:
+        # 老版本 moe_tts 没有对外契约——静默降级，别让用户以为插件坏了
+        logger.debug("mine_chat: 语音插件未提供 tts.v1 契约，跳过语音联动")
         return None
-    return plugin
+    if getattr(api, "API_VERSION", None) != VOICE_API_VERSION:
+        logger.debug("mine_chat: 语音契约版本不符（需要 %s），跳过", VOICE_API_VERSION)
+        return None
+    return api
+
+
+# 兼容旧名字：历史代码/外部若仍引用 get_voice_plugin，这里保留别名。
+get_voice_plugin = get_voice_api
 
 
 def voice_available(context: Any) -> bool:
-    """语音通道是否可用（装了 / 启用 / 配了音色 / 没在冷却期）。"""
-    plugin = get_voice_plugin(context)
-    if plugin is None:
+    """语音通道是否可用（装了 / 启用 / 配了服务端 / 有音色 / 没在冷却期）。"""
+    api = get_voice_api(context)
+    if api is None:
         return False
     try:
-        if float(getattr(plugin, "_server_cooldown_until", 0.0) or 0.0) > time.time():
-            return False
-    except (TypeError, ValueError):
-        pass
-    engine = getattr(plugin, "engine", None)
-    lister = getattr(engine, "list_voices", None)
-    if callable(lister):
-        try:
-            if not lister():
-                return False
-        except Exception:  # noqa: BLE001
-            return False
-    return True
+        return bool(api.available())
+    except Exception:  # noqa: BLE001 - 契约调用异常一律当作不可用
+        return False
 
 
-async def synthesize(context: Any, text: str, voice: str = "") -> str | None:
-    """文本 → 本地 wav 路径；任何失败返回 None。
+async def synthesize(context: Any, text: str, voice: str = "") -> list[str]:
+    """文本 → 本地 wav 路径列表（可能多段）；任何失败返回空列表。
 
-    复用对方插件的 engine，因此：
-    - 先 `_refresh_cfg()`，否则用户刚在 WebUI 改的音色/服务端地址可能还没生效；
-    - 结果落在系统临时目录，调用方负责清理（见 `schedule_cleanup`）；
-    - `pre_translated=True`：文案已经定稿，不许翻译器改写（外语种音色下会被翻）。
+    走 tts.v1 契约，零依赖对方内部实现：
+    - `pre_translated=True`：文案已经定稿，不许翻译器改写（外语种音色下会被翻）；
+    - 契约保证失败只回 `ok=False` 不抛异常，这里仍加 wait_for 兜底超时；
+    - 产物落在对方临时目录，用完由 `schedule_cleanup` 延迟清理。
     """
     cleaned = clean_tts_text(text)
     if not cleaned:
-        return None
-    plugin = get_voice_plugin(context)
-    if plugin is None:
-        return None
-    refresh = getattr(plugin, "_refresh_cfg", None)
-    if callable(refresh):
-        try:
-            refresh()
-        except Exception as exc:  # noqa: BLE001 - 老版本没这方法/内部报错都不致命
-            logger.debug("mine_chat: 刷新语音插件配置失败: %s", exc)
+        return []
+    api = get_voice_api(context)
+    if api is None:
+        return []
     try:
-        if float(getattr(plugin, "_server_cooldown_until", 0.0) or 0.0) > time.time():
-            logger.info("mine_chat: 语音服务端处于冷却期，本次不发语音")
-            return None
-    except (TypeError, ValueError):
-        pass
-
-    engine = getattr(plugin, "engine", None)
-    synth = getattr(engine, "synthesize", None)
-    if not callable(synth):
-        return None
-    voice_name = str(voice or "").strip() or None
-    try:
-        path = await asyncio.wait_for(
-            synth(cleaned, voice_name, pre_translated=True), timeout=VOICE_TIMEOUT
+        res = await asyncio.wait_for(
+            api.synthesize(cleaned, str(voice or "").strip(), pre_translated=True),
+            timeout=VOICE_TIMEOUT,
         )
     except asyncio.TimeoutError:
         logger.warning("mine_chat: 语音合成超时（>%.0fs），本次不发语音", VOICE_TIMEOUT)
-        return None
-    except TypeError:
-        # 老版本 synthesize 没有 pre_translated 参数
-        try:
-            path = await asyncio.wait_for(
-                synth(cleaned, voice_name), timeout=VOICE_TIMEOUT
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("mine_chat: 语音合成失败: %s", exc)
-            return None
-    except Exception as exc:  # noqa: BLE001 - CosyVoiceServerError / QueueFullError 等
-        failure = str(getattr(engine, "last_failure", "") or "")
-        logger.warning(
-            "mine_chat: 语音合成失败（%s）: %s", failure or "未知原因", exc
-        )
-        return None
-    if not path:
-        failure = str(getattr(engine, "last_failure", "") or "")
-        logger.info("mine_chat: 语音合成无产物（%s），本次不发语音", failure or "未知原因")
-        return None
-    if not os.path.isfile(str(path)):
-        logger.info("mine_chat: 语音产物不存在（%s），本次不发语音", path)
-        return None
-    return str(path)
+        return []
+    except Exception as exc:  # noqa: BLE001 - 契约异常也要兜住
+        logger.warning("mine_chat: 语音合成异常: %s", exc)
+        return []
+    if not isinstance(res, dict) or not res.get("ok"):
+        error = str(res.get("error", "")) if isinstance(res, dict) else "契约返回异常"
+        logger.info("mine_chat: 语音合成未成功（%s），本次不发语音", error or "未知原因")
+        return []
+    paths = [str(p) for p in (res.get("files") or []) if p]
+    paths = [p for p in paths if os.path.isfile(p)]
+    if not paths:
+        logger.info("mine_chat: 语音产物为空或不存在，本次不发语音")
+        return []
+    return paths
 
 
-def schedule_cleanup(path: str) -> None:
+def schedule_cleanup(path: str, context: Any = None) -> None:
     """延迟删除合成产物：给平台读完文件留时间。
 
-    优先用对方插件的清理助手（它会登记到它自己的清理队列）；拿不到就直接
-    起一个延迟任务删文件——这些 wav 落在系统临时目录，不删会一直堆积。
+    优先走 tts.v1 契约的 cleanup()（由对方按其清理队列管理）；拿不到契约
+    就起一个延迟任务自己删——wav 落在系统临时目录，不删会一直堆积。
     """
     target = str(path or "").strip()
     if not target:
         return
-    try:
-        from astrbot_plugin_cosyvoice.utils import audio as cv_audio  # type: ignore
-
-        helper = getattr(cv_audio, "schedule_cleanup", None)
-        if callable(helper):
-            helper(target, VOICE_CLEANUP_DELAY)
-            return
-    except Exception:  # noqa: BLE001 - 依赖对方包结构，失败就自己删
-        pass
+    if context is not None:
+        api = get_voice_api(context)
+        if api is not None:
+            try:
+                api.cleanup(target, VOICE_CLEANUP_DELAY)
+                return
+            except Exception:  # noqa: BLE001 - 契约清理失败就自己删
+                pass
 
     async def _later() -> None:
         await asyncio.sleep(VOICE_CLEANUP_DELAY)
@@ -490,34 +468,42 @@ def _message_chain():
 async def speak(
     context: Any, umo: str, text: str, voice: str = ""
 ) -> bool:
-    """合成并发送一条语音消息；任何一环失败返回 False（调用方降级为文字）。"""
+    """合成并发送一条（或多段）语音消息；任何一环失败返回 False（调用方降级为文字）。
+
+    tts.v1 可能一次返回多段 wav（引擎按换行/长度切分），这里逐段各发一条 Record。
+    任一段发送失败即视为未完全送达 → 返回 False，调用方会补发文字兜底；已发的
+    语音不撤回（真人也可能先发语音再补一句文字）。
+    """
     if not umo:
         return False
-    path = await synthesize(context, text, voice)
-    if not path:
+    paths = await synthesize(context, text, voice)
+    if not paths:
         return False
     chain_cls = _message_chain()
     if chain_cls is None:
         logger.warning("mine_chat: 找不到 MessageChain，无法发送语音")
-        schedule_cleanup(path)
+        for p in paths:
+            schedule_cleanup(p, context)
         return False
     try:
         from astrbot.api.message_components import Record  # type: ignore
     except Exception as exc:  # noqa: BLE001
         logger.warning("mine_chat: 语音组件不可用: %s", exc)
-        schedule_cleanup(path)
+        for p in paths:
+            schedule_cleanup(p, context)
         return False
-    try:
-        result = await context.send_message(
-            umo, chain_cls([Record(file=path, url=path)])
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("mine_chat: 语音发送异常: %s", exc)
-        schedule_cleanup(path)
-        return False
-    # 无论成败都登记清理：失败时文件同样没人用了
-    schedule_cleanup(path)
-    if result is False:
-        logger.warning("mine_chat: 语音未送达（未找到匹配平台）umo=%s", umo)
-        return False
-    return True
+    all_sent = True
+    for path in paths:
+        try:
+            result = await context.send_message(
+                umo, chain_cls([Record(file=path, url=path)])
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mine_chat: 语音发送异常: %s", exc)
+            result = False
+        # 无论成败都登记清理：失败时文件同样没人用了
+        schedule_cleanup(path, context)
+        if result is False:
+            logger.warning("mine_chat: 语音未送达（未找到匹配平台）umo=%s", umo)
+            all_sent = False
+    return all_sent
