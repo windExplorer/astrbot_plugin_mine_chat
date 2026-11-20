@@ -1,5 +1,41 @@
 # 更新日志
 
+## v1.4.0（模型可控可查：统一默认模型配置 + 修「选了模型不生效」的 bug + 显示实际来源）
+
+**用户问题**：「用的模型并不是我设置的，主要是我没看到来源，为什么用这个模型」。
+
+**根因**（两条，都实证）：
+
+1. **配置页选了模型也不生效（真 bug）**：`llm.resolve_provider` 里用
+   `context.provider_manager.get_provider_by_id(model_id)` 取显式指定的模型，但 AstrBot 4.29.x
+   的这个方法已是 **`async def`**——没 await 拿到的是 coroutine，非 None 就直接用，
+   后面 `provider.text_chat()` 必然 `AttributeError` → 被包成 `LLMError`，日程走兜底模板、
+   主动消息降级。用户看到的就是「我明明选了模型，却没用它」。
+2. **「跟随会话当前模型」在 4.29.x 换了口径**：`get_using_provider` 不再读面板上的全局默认
+   `curr_provider`（已 deprecated），只读会话配置 `agent.config.model.provider_id`
+   （且要求 `agent.runtime=="astrbot"`），否则回退 `provider_insts[0]`（已加载的第一个）。
+   所以用户面板上设的默认模型和插件实际用的对不上。
+3. 插件全程不打印实际用的 provider，控制台也没有展示，用户**无从核对来源**。
+
+**改动**：
+
+- **新增统一模型配置**「配置 → 模型 → 默认模型」（`llm.default_model`，下拉可选所有已加载模型）：
+  留空 = 系统默认模型；`schedule.model` / `proactive.model` 两个细分项仍可各自覆盖，
+  优先级 **细分覆盖 > 统一默认 > 跟随系统**。新增 `llm.model_for(settings, purpose)` 统一解析，
+  日程生成 / 世界观提炼走 `schedule`，主动消息 / 绘图提示词走 `proactive`。
+- **修 coroutine bug**：`describe_provider` 改用同步的 `context.get_provider_by_id` 取显式模型，
+  并做 `hasattr(provider, "text_chat")` 真 provider 校验；拿不到或异常时回退跟随系统，
+  绝不把 coroutine 当 provider 用。`resolve_provider` 保留为兼容入口。
+- **来源可查**：`describe_provider` 返回 `{provider_id, model, source, source_detail}`，
+  source ∈ explicit（配置指定）/ system（跟随系统）/ none；`chat_text` 每次调用记 debug 日志。
+  WebUI「总览」新增「对话模型」卡片，分日程/主动两行显示实际模型与来源标签，
+  并在 hint 里写清 4.29.x 的口径（跟随会话 agent 配置，找不到才用第一个，非面板全局默认）。
+- 配置 hint 同步更新：三项模型字段都说明新的优先级。
+
+**自检**：新增 `tests/test_model_resolution.py`（18 项：model_for 优先级 / describe_provider 来源 /
+4.29.x coroutine bug 回归），AST 抠真代码驱动；原有 core 337 + v110 71 + schema（8 组）+ store_migration
++ tts_bridge 全过。
+
 ## v1.3.0（语音联动从 CosyVoice 私有复用切到萌萌语音 tts.v1 契约）
 
 **需求**：用户把关联的语音插件从 CosyVoice3 换成了萌萌语音（`astrbot_plugin_moe_tts`）。

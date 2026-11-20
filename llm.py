@@ -17,28 +17,88 @@ _CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 DEFAULT_TIMEOUT = 120.0
 
 
+def model_for(settings: Any, purpose: str) -> str:
+    """解析某用途实际该传给 resolve_provider 的 model_id。
+
+    优先级：细分覆盖（schedule.model / proactive.model）> 统一默认 llm.default_model > 空（跟随系统）。
+    这样用户既能在「配置 → 模型」里设一个全局默认，也能给日程/主动消息单独指定模型。
+    """
+    default = ""
+    try:
+        default = str(getattr(settings, "llm_default_model", "") or "").strip()
+    except Exception:  # noqa: BLE001 - 老 Settings 没有该字段
+        pass
+    if purpose == "schedule":
+        override = str(getattr(settings, "schedule_model", "") or "").strip()
+    elif purpose == "proactive":
+        override = str(getattr(settings, "proactive_model", "") or "").strip()
+    else:
+        override = ""
+    return override or default
+
+
 class LLMError(RuntimeError):
     """LLM 调用失败（无可用 provider / 超时 / 返回异常）。"""
 
 
-async def resolve_provider(context: Any, umo: str | None = None, model_id: str = "") -> Any:
-    """解析要使用的 provider。
+def _provider_identity(provider: Any) -> tuple[str, str]:
+    """取 provider 的 (id, model)，用于日志/控制台展示"实际用了哪个模型"。"""
+    pid, model = "", ""
+    try:
+        meta = provider.meta()
+        pid = str(getattr(meta, "id", "") or "")
+        model = str(getattr(meta, "model", "") or "")
+    except Exception:  # noqa: BLE001 - 老版本/异常 provider 兜底
+        pass
+    if not pid:
+        pid = str(getattr(provider, "provider_id", "") or "")
+    return pid, model
 
-    优先级：显式 model_id > 该会话当前 provider > 全局默认 provider。
+
+async def describe_provider(
+    context: Any, umo: str | None = None, model_id: str = ""
+) -> dict:
+    """解析 provider 并返回"用了谁 + 从哪来"，日志与控制台共用同一套口径。
+
+    Returns:
+        {provider, provider_id, model, source, source_detail, requested}
+        - source ∈ explicit / system / none
+          explicit = 配置里显式指定的模型（细分覆盖或统一默认）
+          system   = 跟随 AstrBot 当前模型（get_using_provider）
+          none     = 没解析到任何 provider
+        provider 为 None 时 source=none，调用方据此降级。
     """
-    manager = getattr(context, "provider_manager", None)
+    result: dict[str, Any] = {
+        "provider": None, "provider_id": "", "model": "",
+        "source": "none", "source_detail": "", "requested": str(model_id or ""),
+    }
 
-    if model_id and manager is not None:
-        getter = getattr(manager, "get_provider_by_id", None)
+    # 1) 显式指定。注意用 context.get_provider_by_id（同步）而不是
+    #    context.provider_manager.get_provider_by_id——后者在 AstrBot 4.29.x 是 async，
+    #    旧代码没 await，拿到的是 coroutine，后面 .text_chat 必炸（v1.4.0 修复）。
+    if model_id:
+        getter = getattr(context, "get_provider_by_id", None)
+        provider = None
         if callable(getter):
             try:
                 provider = getter(model_id)
             except Exception as exc:  # noqa: BLE001 - 配置写错不应让插件崩
                 logger.warning("mine_chat: 指定模型 %s 解析失败: %s", model_id, exc)
-                provider = None
-            if provider is not None:
-                return provider
+        # 兜底：确认拿到的是真 provider（不是 coroutine / 字符串）
+        if provider is not None and hasattr(provider, "text_chat"):
+            pid, model = _provider_identity(provider)
+            result.update({
+                "provider": provider, "provider_id": pid or str(model_id),
+                "model": model, "source": "explicit", "source_detail": "配置指定",
+            })
+            return result
+        if provider is not None and not hasattr(provider, "text_chat"):
+            logger.warning(
+                "mine_chat: 指定模型 %s 解析结果异常（%s），回退跟随系统模型",
+                model_id, type(provider).__name__,
+            )
 
+    # 2) 跟随会话/系统当前模型（AstrBot 的 get_using_provider 口径）
     getter_async = getattr(context, "get_using_provider_async", None)
     if callable(getter_async):
         try:
@@ -46,16 +106,34 @@ async def resolve_provider(context: Any, umo: str | None = None, model_id: str =
         except Exception as exc:  # noqa: BLE001
             logger.warning("mine_chat: 按会话解析 provider 失败: %s", exc)
             provider = None
-        if provider is not None:
-            return provider
+        if provider is not None and hasattr(provider, "text_chat"):
+            pid, model = _provider_identity(provider)
+            result.update({
+                "provider": provider, "provider_id": pid, "model": model,
+                "source": "system", "source_detail": "跟随会话/系统当前模型",
+            })
+            return result
 
     getter_sync = getattr(context, "get_using_provider", None)
     if callable(getter_sync):
         try:
-            return getter_sync(umo)
+            provider = getter_sync(umo)
         except Exception as exc:  # noqa: BLE001
             logger.warning("mine_chat: 取默认 provider 失败: %s", exc)
-    return None
+            provider = None
+        if provider is not None and hasattr(provider, "text_chat"):
+            pid, model = _provider_identity(provider)
+            result.update({
+                "provider": provider, "provider_id": pid, "model": model,
+                "source": "system", "source_detail": "跟随系统默认模型",
+            })
+            return result
+    return result
+
+
+async def resolve_provider(context: Any, umo: str | None = None, model_id: str = "") -> Any:
+    """解析要使用的 provider（兼容旧调用；新代码用 describe_provider 看来源）。"""
+    return (await describe_provider(context, umo=umo, model_id=model_id))["provider"]
 
 
 def _extract_text(response: Any) -> str:
@@ -100,9 +178,17 @@ async def chat_text(
     timeout: float = DEFAULT_TIMEOUT,
 ) -> str:
     """发起一次纯文本对话，返回模型输出（已 strip）。失败抛 LLMError。"""
-    provider = await resolve_provider(context, umo=umo, model_id=model_id)
+    desc = await describe_provider(context, umo=umo, model_id=model_id)
+    provider = desc["provider"]
     if provider is None:
         raise LLMError("没有可用的对话模型，请先在 AstrBot 里配置 Provider")
+    # 每次调用都记录"实际用了哪个模型 + 从哪来"，让 WebUI/日志能核对来源。
+    # debug 级别避免高频日程重试刷屏；失败时下面的 warning 会带同样上下文。
+    logger.debug(
+        "mine_chat: 模型来源=%s(%s) provider=%s model=%s umo=%s",
+        desc["source"], desc["source_detail"], desc["provider_id"] or "-",
+        desc["model"] or "-", umo or "-",
+    )
 
     kwargs: dict[str, Any] = {
         "prompt": prompt,

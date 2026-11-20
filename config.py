@@ -154,6 +154,9 @@ class Settings:
     primary_umo: str = ""
     window_auto_bind: bool = False
 
+    # 统一默认模型（llm.default_model）；空 = 跟随系统。细分项的 model 优先于它。
+    llm_default_model: str = ""
+
     # 注入
     inject_scopes: tuple[str, ...] = ("private", "group")
     inject_enabled: bool = True
@@ -259,6 +262,7 @@ class Settings:
     def from_config(cls, raw: Any) -> Settings:
         """读取配置（嵌套分组优先，v1.0.x 平铺键兜底）。"""
         get = raw.get if hasattr(raw, "get") else (lambda key, default=None: default)
+        llm = _group_of(raw, "llm")
         persona = _group_of(raw, "persona")
         inject = _group_of(raw, "inject")
         schedule = _group_of(raw, "schedule")
@@ -304,6 +308,9 @@ class Settings:
 
         return cls(
             enabled=to_bool(get("enabled", True), True),
+            llm_default_model=to_str(
+                pick(llm, "default_model", "llm_default_model", "")
+            ),
             active_persona=to_str(pick(persona, "active", "active_persona", ""))
             or to_str(get("persona_override", "")),
             primary_umo=to_str(pick(persona, "primary_umo", "primary_umo", "")),

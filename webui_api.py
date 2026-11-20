@@ -156,6 +156,33 @@ async def h_overview(plugin) -> dict:
 
     bindings = await plugin.store.list_bindings(persona_id or None)
 
+    # 模型来源：与 chat_text 同一套 describe_provider 口径，让控制台能看到
+    # 「实际用的模型 + 从哪来」（显式配置 / 跟随系统 / 无）。
+    primary_umo = ""
+    for item in bindings:
+        if bool(int(item.get("is_primary") or 0)):
+            primary_umo = str(item.get("umo") or "")
+            break
+    primary_umo = str(settings.primary_umo or "").strip() or primary_umo or None
+    model_status: dict[str, Any] = {}
+    try:
+        from . import llm as llm_mod  # 相对导入，避免与顶层 llm 混淆
+
+        for purpose in ("schedule", "proactive"):
+            desc = await llm_mod.describe_provider(
+                plugin.context, umo=primary_umo,
+                model_id=llm_mod.model_for(settings, purpose),
+            )
+            model_status[purpose] = {
+                "provider_id": desc["provider_id"],
+                "model": desc["model"],
+                "source": desc["source"],
+                "source_detail": desc["source_detail"],
+                "configured": desc["requested"],
+            }
+    except Exception as exc:  # noqa: BLE001 - 展示失败不影响总览其余数据
+        logger.debug("mine_chat: 读取模型状态失败: %s", exc)
+
     return ok(
         {
             "version": plugin.plugin_version,
@@ -184,6 +211,7 @@ async def h_overview(plugin) -> dict:
             ],
             "plan": plan_data,
             "proactive": status,
+            "model_status": model_status,
             "log_summary": summary,
             "recent_logs": [_log_row(row) for row in logs],
         }

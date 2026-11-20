@@ -737,7 +737,7 @@ class ScheduleService:
                 raw_text = await llm_mod.chat_text(
                     self.context,
                     umo=umo,
-                    model_id=settings.schedule_model,
+                    model_id=llm_mod.model_for(settings, "schedule"),
                     system_prompt=system,
                     prompt=prompt,
                     temperature=settings.schedule_temperature,
@@ -952,7 +952,7 @@ class ScheduleService:
         try:
             text = await llm_mod.chat_text(
                 self.context,
-                model_id=settings.schedule_model,
+                model_id=llm_mod.model_for(settings, "schedule"),
                 system_prompt="你是一位角色设定整理师，只输出被要求格式的内容。",
                 prompt=prompts.build_profile_extract_prompt(
                     # 只喂「生活向」段落：把消息发送设定/格式铁律喂给提炼器，

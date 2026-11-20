@@ -835,7 +835,7 @@ class ProactiveService:
             final_prompt, raw_prompt = await compose_image_prompt(
                 self.context,
                 umo=str(info.get("umo") or "") or None,
-                model_id=settings.proactive_model,
+                model_id=llm_mod.model_for(settings, "proactive"),
                 activity=activity,
                 seed=seed,
                 mood=str(current.get("mood") or "").strip(),

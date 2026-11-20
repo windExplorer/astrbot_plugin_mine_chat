@@ -15,7 +15,7 @@ import {
   useMessage,
 } from "naive-ui";
 
-import { apiOverview, apiProactiveNow, reasonText, type LogRow, type OverviewPayload } from "../api";
+import { apiOverview, apiProactiveNow, reasonText, type LogRow, type ModelStatus, type OverviewPayload } from "../api";
 import { useEvents } from "../useEvents";
 
 const message = useMessage();
@@ -55,6 +55,20 @@ onMounted(load);
 useEvents(load);
 
 const plan = computed(() => data.value?.plan || ({} as any));
+
+/** 模型来源标签：让"用的不是我设置的"能当场核对。 */
+const modelSourceTag = (m?: ModelStatus) => {
+  if (!m) return { type: "default" as const, label: "未知" };
+  if (m.source === "explicit") return { type: "success" as const, label: "配置指定" };
+  if (m.source === "system") return { type: "info" as const, label: "跟随系统" };
+  return { type: "error" as const, label: "无可用模型" };
+};
+const modelLabel = (m?: ModelStatus) => {
+  if (!m || !m.provider_id) return "—";
+  return m.model ? `${m.provider_id} · ${m.model}` : m.provider_id;
+};
+const scheduleModel = computed(() => data.value?.model_status?.schedule);
+const proactiveModel = computed(() => data.value?.model_status?.proactive);
 
 /** 第一个被拦截的闸门 = 现在没发的原因 */
 const blockedGate = computed(() => {
@@ -200,6 +214,28 @@ const logColumns = [
         </n-gi>
       </n-grid>
 
+      <n-card size="small" title="对话模型" class="section">
+        <p class="model-hint">
+          这里显示插件<strong>实际调用的模型</strong>和来源。想固定用某个模型，到「配置 → 模型 → 默认模型」选；
+          「跟随系统」在 AstrBot 4.29.x 起跟随的是当前会话 agent 配置的模型，找不到时才用已加载列表的第一个，
+          不再是面板上的全局默认模型。
+        </p>
+        <n-descriptions :column="1" label-placement="left" size="small">
+          <n-descriptions-item label="日程生成">
+            <n-tag size="small" :type="modelSourceTag(scheduleModel).type" :bordered="false">
+              {{ modelSourceTag(scheduleModel).label }}
+            </n-tag>
+            <span class="model-value">{{ modelLabel(scheduleModel) }}</span>
+          </n-descriptions-item>
+          <n-descriptions-item label="主动消息">
+            <n-tag size="small" :type="modelSourceTag(proactiveModel).type" :bordered="false">
+              {{ modelSourceTag(proactiveModel).label }}
+            </n-tag>
+            <span class="model-value">{{ modelLabel(proactiveModel) }}</span>
+          </n-descriptions-item>
+        </n-descriptions>
+      </n-card>
+
       <n-card size="small" title="最近裁决" class="section">
         <template #header-extra>
           <n-button size="tiny" quaternary @click="load">刷新</n-button>
@@ -254,5 +290,15 @@ const logColumns = [
 }
 .gate-detail {
   opacity: 0.6;
+}
+.model-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  opacity: 0.7;
+}
+.model-value {
+  margin-left: 8px;
+  font-size: 13px;
 }
 </style>

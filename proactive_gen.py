@@ -857,7 +857,7 @@ class ProactiveComposer:
         text = await llm_mod.chat_text(
             self.context,
             umo=umo,
-            model_id=settings.proactive_model,
+            model_id=llm_mod.model_for(settings, "proactive"),
             system_prompt=system,
             prompt=prompt,
             temperature=0.9,
@@ -906,7 +906,7 @@ class ProactiveComposer:
             again = await llm_mod.chat_text(
                 self.context,
                 umo=umo,
-                model_id=settings.proactive_model,
+                model_id=llm_mod.model_for(settings, "proactive"),
                 system_prompt=system,
                 prompt=prompt + prompts.build_time_correction(
                     phase.name, phase.light, conflicts

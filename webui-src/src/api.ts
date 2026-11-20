@@ -210,8 +210,18 @@ export interface OverviewPayload {
   bindings: { umo: string; kind: string; is_primary: boolean; last_seen_at: number }[];
   plan: PlanPayload | Record<string, never>;
   proactive: ProactiveStatus | Record<string, never>;
+  model_status: Record<string, ModelStatus>;
   log_summary: Record<string, number>;
   recent_logs: LogRow[];
+}
+
+/** 实际使用的对话模型及来源（与后端 describe_provider 同口径）。 */
+export interface ModelStatus {
+  provider_id: string;
+  model: string;
+  source: "explicit" | "system" | "none";
+  source_detail: string;
+  configured: string;
 }
 
 export interface PersonaStored {
