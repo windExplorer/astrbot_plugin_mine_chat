@@ -46,6 +46,10 @@ VOICE_TIMEOUT = 90.0
 # 契约的 cleanup() 默认 600s 清理；这里覆盖成 120s（主动消息场景无需留那么久），
 # 给平台读文件留出时间即可。
 VOICE_CLEANUP_DELAY = 120.0
+# 常见音频后缀：判断用户填的音色名是否已经带扩展名（见 normalize_voice_name）。
+_VOICE_AUDIO_EXTS = (
+    ".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".wma", ".opus", ".aiff",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -338,6 +342,37 @@ def clean_tts_text(text: Any) -> str:
     return cleaned[:220]
 
 
+def normalize_voice_name(voice: Any, available: list[dict] | None = None) -> str:
+    """把用户填的音色名还原成服务端认的全名（根治「清冷」这类显示名 400）。
+
+    背景：moe_tts 控制台的音色卡片用 `vname()` 去掉扩展名展示（如把
+    `清冷.wav` 显示成 `清冷`），用户照着界面填进本插件。但 tts.v1 的
+    `synthesize` 会把音色名原样当 `prompt_wav_path` 发给服务端，服务端
+    只认带后缀的真实文件名 → HTTP 400「未找到可用的参考音频」。
+
+    还原策略（可用音色列表来自契约的 `voices()`）：
+      1. 精确匹配（已填全名 / 名字本身无后缀且服务端就用它）→ 原样返回；
+      2. 去后缀匹配大小写不敏感：`清冷` 命中 `清冷.wav` → 返回全名；
+      3. 没拿到音色列表（接口不可用/异常）时按后缀兜底：已带音频后缀原样，
+         否则补 `.wav`（TaskHub 音色即以 wav 文件标识）。
+    留空表示走 moe_tts 默认音色，原样返回空串，不做任何补全。
+    """
+    name = str(voice or "").strip()
+    if not name:
+        return ""
+    for info in available or []:
+        full = str((info or {}).get("name", "") or "").strip() if isinstance(info, dict) else str(info or "").strip()
+        if not full:
+            continue
+        if full == name:
+            return full
+        if full.rsplit(".", 1)[0].lower() == name.lower():
+            return full
+    if name.lower().endswith(_VOICE_AUDIO_EXTS):
+        return name
+    return name + ".wav"
+
+
 def get_voice_api(context: Any) -> Any | None:
     """取萌萌语音的 tts.v1 契约对象（star_cls.api）；不可用返回 None。
 
@@ -394,9 +429,22 @@ async def synthesize(context: Any, text: str, voice: str = "") -> list[str]:
     api = get_voice_api(context)
     if api is None:
         return []
+    # 还原音色名：控制台展示名被去掉了扩展名，直接传会被服务端判为无效参考音频。
+    # 优先用契约的 voices() 精确匹配；接口不可用就走后缀兜底，绝不因它失败而不发语音。
+    available: list[dict] | None = None
+    if str(voice or "").strip():
+        try:
+            voices_getter = getattr(api, "voices", None)
+            if callable(voices_getter):
+                raw = await voices_getter()
+                if isinstance(raw, list):
+                    available = raw
+        except Exception:  # noqa: BLE001 - 音色列表拉取失败按兜底逻辑处理
+            available = None
+    voice_name = normalize_voice_name(voice, available)
     try:
         res = await asyncio.wait_for(
-            api.synthesize(cleaned, str(voice or "").strip(), pre_translated=True),
+            api.synthesize(cleaned, voice_name, pre_translated=True),
             timeout=VOICE_TIMEOUT,
         )
     except asyncio.TimeoutError:

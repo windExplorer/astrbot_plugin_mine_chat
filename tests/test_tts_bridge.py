@@ -31,7 +31,8 @@ def _load_bridge():
         "bridge.py",
         {
             "VOICE_PLUGIN", "VOICE_API_VERSION", "VOICE_TIMEOUT", "VOICE_CLEANUP_DELAY",
-            "clean_tts_text", "_BRACKET_RE", "_MARKUP_RE", "_ELLIPSIS_RE", "_KAOMOJI_RE",
+            "_VOICE_AUDIO_EXTS", "clean_tts_text", "normalize_voice_name",
+            "_BRACKET_RE", "_MARKUP_RE", "_ELLIPSIS_RE", "_KAOMOJI_RE",
             "get_voice_api", "voice_available", "synthesize", "schedule_cleanup",
             "speak", "_message_chain",
         },
@@ -51,18 +52,29 @@ def _load_bridge():
 
 class _FakeApi:
     def __init__(self, *, ok=True, files=None, error="", available=True,
-                 version="tts.v1", raise_exc=False):
+                 version="tts.v1", raise_exc=False, voices=None, voices_exc=False,
+                 no_voices=False):
         self.API_VERSION = version
         self._ok = ok
         self._files = files or []
         self._error = error
         self._available = available
         self._raise = raise_exc
+        self._voices = voices
+        self._voices_exc = voices_exc
+        self._no_voices = no_voices
         self.cleaned = []
         self.calls = []
 
     def available(self):
         return self._available
+
+    async def voices(self):
+        if self._no_voices:
+            raise AttributeError("no voices contracts")
+        if self._voices_exc:
+            raise RuntimeError("voices boom")
+        return self._voices
 
     async def synthesize(self, text, voice="", **kwargs):
         self.calls.append((text, voice, kwargs))
@@ -95,6 +107,23 @@ def main():
     get_voice_api = ns["get_voice_api"]
     voice_available = ns["voice_available"]
     synthesize = ns["synthesize"]
+    normalize_voice_name = ns["normalize_voice_name"]
+
+    print(f"\n[{PASS_LABEL}] normalize_voice_name 音色名还原（根治显示名 400）")
+    # 控制台把 清冷.wav 显示成 清冷；契约 synth 要的是带后缀全名。
+    c.equal("留空保持空（走默认音色）", normalize_voice_name(""), "")
+    c.equal("留空空格保持空", normalize_voice_name("   "), "")
+    c.equal("无后缀补 .wav", normalize_voice_name("清冷"), "清冷.wav")
+    c.equal("已带 .wav 不重复补", normalize_voice_name("清冷.wav"), "清冷.wav")
+    c.equal("已带 .mp3 不补", normalize_voice_name("清冷.mp3"), "清冷.mp3")
+    c.equal("两端空白先裁剪", normalize_voice_name("  清冷  "), "清冷.wav")
+    # 契约给了音色列表时精确匹配优先：大小写不敏感去后缀命中全名
+    listed = [{"name": "萌1"}, {"name": "QingLeng.wav"}, {"name": "萌2.m4a"}]
+    c.equal("列表精确匹配原样返回", normalize_voice_name("萌1", listed), "萌1")
+    c.equal("列表去后缀匹配（大小写不敏感）", normalize_voice_name("qingleng", listed), "QingLeng.wav")
+    c.equal("列表匹配含其他后缀", normalize_voice_name("萌2", listed), "萌2.m4a")
+    c.equal("列表未命中走兜底补 .wav", normalize_voice_name("陌生", listed), "陌生.wav")
+    c.equal("列表为空等同兜底", normalize_voice_name("清冷", []), "清冷.wav")
 
     print(f"\n[{PASS_LABEL}] get_voice_api 契约校验")
     api = _FakeApi()
@@ -122,13 +151,27 @@ def main():
                 f.write(b"RIFF")
 
         async def _run():
+            # 无音色列表：兜底补 .wav（控制台显示名场景）
             fake = _FakeApi(ok=True, files=[p1, p2])
             paths = await synthesize(_context(_FakeStar(fake)), "（别过脸）你好呀", voice="萌1")
             c.equal("多段路径全返回", paths, [p1, p2])
             c.equal("调用一次契约", len(fake.calls), 1)
             c.equal("朗读文本已清洗", fake.calls[0][0], "你好呀")
-            c.equal("音色透传", fake.calls[0][1], "萌1")
+            c.equal("无列表兜底补 .wav", fake.calls[0][1], "萌1.wav")
             c.check("pre_translated=True", fake.calls[0][2].get("pre_translated") is True)
+
+            # 契约给了音色列表：去后缀匹配还原成全名（清冷 -> 清冷.wav）
+            listed = _FakeApi(ok=True, files=[p1], voices=[{"name": "清冷.wav"}])
+            await synthesize(_context(_FakeStar(listed)), "你好", voice="清冷")
+            c.equal("voices() 精确还原全名", listed.calls[0][1], "清冷.wav")
+
+            # 老版本契约无 voices() / 拉取异常：静默走兜底，不影响发出
+            for label, kw in (("无 voices() 方法", {"no_voices": True}),
+                              ("voices() 异常", {"voices_exc": True})):
+                degraded = _FakeApi(ok=True, files=[p1], **kw)
+                got = await synthesize(_context(_FakeStar(degraded)), "你好", voice="清冷")
+                c.equal(label + " 仍补 .wav 发出", degraded.calls[0][1], "清冷.wav")
+                c.equal(label + " 路径正常", got, [p1])
 
             fail = _FakeApi(ok=False, files=[], error="排队超时")
             c.equal("合成失败返回空", await synthesize(_context(_FakeStar(fail)), "你好"), [])

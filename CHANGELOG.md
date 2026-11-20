@@ -1,5 +1,27 @@
 # 更新日志
 
+## v1.4.2（修主动消息语音全灭：照控制台填的音色名被 moe_tts 去后缀展示，服务端认不出）
+
+**用户反馈**：「语音一直发不出来」，但正常聊天有语音；裁决日志全是 `voice_fallback`（非 `voice_no_api`）。
+
+**现象**：主动消息文字照发、语音从不出现。把 mine_chat 的 `voice_name` 置空后语音立刻正常，填「清冷」就失败。用户日志给出铁证：
+
+```
+[moe_tts] 服务端进入冷却 30s: TaskHub 合成失败 HTTP 400:
+  {"detail":"未找到可用的参考音频，请检查 prompt_wav_path / prompt_wav 与 voices.json"}
+mine_chat: 语音合成未成功（...），本次不发语音
+```
+
+**根因**：moe_tts 控制台音色卡片用 `vname()` 去掉扩展名展示（`VoicesView.vue`，把 `清冷.wav` 显示成 `清冷`），用户照界面填进本插件。而 tts.v1 的 `synthesize(text, voice)` 把音色名原样当 `prompt_wav_path` 发给 TaskHub（`server.py:246-247`），服务端只认带后缀的真实文件名 → HTTP 400 → `ok=False` → 静默降级成 `voice_fallback`。正常聊天链路用的是会话音色 / 默认音色（内部本就是全名），所以不受影响——这就是「聊天有声、主动全灭」的原因。`available()` 只检查默认音色名非空、不校验本插件传来的名字，故不会走 `voice_no_api`，失败原因又被吞进一条 info 日志，极难定位。
+
+**改动**（`bridge.py`）：
+- 新增纯函数 `normalize_voice_name(voice, available)`：合成前把音色名还原成服务端认的全名。优先用契约 `voices()` 返回的音色列表做精确匹配 / 去后缀大小写不敏感匹配（对 TaskHub 与 tts_serve 都正确），拿不到列表时按后缀兜底（已带音频后缀原样、否则补 `.wav`）。留空保持为空，继续走 moe_tts 默认音色。
+- `synthesize()` 在调契约前拉取 `api.voices()` 并还原音色名；`voices()` 不存在或抛异常一律静默降级到兜底，绝不影响发出。
+- `_conf_schema.json` 的 `voice_name` hint 说明「带不带后缀都能用」。
+- 新增/更新 `tests/test_tts_bridge.py` 守卫：还原函数的留空 / 补后缀 / 已是全名 / 列表精确与去后缀匹配，以及 synthesize 的兜底、精确还原、契约缺失/异常降级路径。
+
+**自检**：`test_tts_bridge` 全过（新增 12+ 项）；core_logic / schema / store_migration 全过。
+
 ## v1.4.1（纠正 v1.4.0 的一处错误结论：总览卡片并列显示「面板默认」与「实际调用」）
 
 **用户反馈**：「系统配置的模型和插件里显示的不一样」，且用户实际跑 AstrBot 4.29.x。
