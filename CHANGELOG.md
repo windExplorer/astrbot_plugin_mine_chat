@@ -1,5 +1,31 @@
 # 更新日志
 
+## v1.4.1（纠正 v1.4.0 的一处错误结论：总览卡片并列显示「面板默认」与「实际调用」）
+
+**用户反馈**：「系统配置的模型和插件里显示的不一样」，且用户实际跑 AstrBot 4.29.x。
+
+**先纠正 v1.4.0 的错误**：v1.4.0 的根因 #2 与卡片 hint 写成「面板全局默认不再被读取，
+跟随的是会话 agent 配置」——这是我对照 4.30.0-beta.1 参考源码得出的**错误结论**，在 4.29.x
+上不成立，误导了用户。事实是：AstrBot 系统配置面板选的模型写在 `agent.config.model.provider_id`，
+核心 `select_chat_provider` → `get_using_provider_async(umo)` **正是读它**，并没有不读。真正没人读的
+只是老 `curr_provider` sp key。
+
+**「不一样」的真正原因**：`get_using_provider(umo)` 在传了具体 umo 时，如果该会话被配置档案路由
+或 `/provider` 会话覆盖指向别的模型，返回的是**会话模型**；而系统配置面板显示的是**全局默认**
+（等价 `umo=None`）。两者不同是 AstrBot 的正常设计，不是插件选错。v1.4.0 的卡片只显示了主窗口
+umo 解析出的模型，用户拿它跟面板一比自然对不上。
+
+**改动**：
+- `h_overview` 的 `model_status` 增加 `system` 一项：`describe_provider(context, umo=None, model_id="")`
+  取面板口径的全局默认模型；`schedule` / `proactive` 仍是实际调用口径（主窗口 umo + 插件配置覆盖）。
+- 总览「对话模型」卡片并列三行：「系统默认（面板）」+ 日程生成 + 主动消息，各带来源标签；
+  文案改为「两者不同通常是会话单独设了模型，不是插件选错」。
+- `_conf_schema.json` 的 `llm.default_model` hint 同步纠正，不再说"面板默认不被读取"。
+
+**自检**：新增 model_status.system（umo=None）断言到 `test_model_resolution.py`；既有测试全过。
+
+> 注：v1.4.0 根因 #1（coroutine bug）与修复有效，保留；仅 #2 的表述在此更正。
+
 ## v1.4.0（模型可控可查：统一默认模型配置 + 修「选了模型不生效」的 bug + 显示实际来源）
 
 **用户问题**：「用的模型并不是我设置的，主要是我没看到来源，为什么用这个模型」。

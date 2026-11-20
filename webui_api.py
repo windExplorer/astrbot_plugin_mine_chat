@@ -156,8 +156,14 @@ async def h_overview(plugin) -> dict:
 
     bindings = await plugin.store.list_bindings(persona_id or None)
 
-    # 模型来源：与 chat_text 同一套 describe_provider 口径，让控制台能看到
-    # 「实际用的模型 + 从哪来」（显式配置 / 跟随系统 / 无）。
+    # 模型来源：与 chat_text 同一套 describe_provider 口径。
+    # 关键：AstrBot 的 get_using_provider(umo) 在 4.29.x 里，传了 umo 且该会话
+    # 有模型偏好/被路由到别的配置档案时，返回的是「会话模型」；而系统配置面板
+    # 显示的是「全局默认模型」（等价 umo=None）。两者不同是正常现象，不是 bug。
+    # 所以这里并列给出两条：
+    #   system        = 面板口径（umo=None），和系统配置面板显示的对得上；
+    #   schedule/proactive = 插件实际调用口径（传主窗口 umo + 插件配置覆盖）。
+    # 用户看到两者不同时，能立刻判断是「会话覆盖了模型」还是「插件单独指定了模型」。
     primary_umo = ""
     for item in bindings:
         if bool(int(item.get("is_primary") or 0)):
@@ -168,18 +174,27 @@ async def h_overview(plugin) -> dict:
     try:
         from . import llm as llm_mod  # 相对导入，避免与顶层 llm 混淆
 
-        for purpose in ("schedule", "proactive"):
-            desc = await llm_mod.describe_provider(
-                plugin.context, umo=primary_umo,
-                model_id=llm_mod.model_for(settings, purpose),
-            )
-            model_status[purpose] = {
+        def _row(desc: dict) -> dict[str, Any]:
+            return {
                 "provider_id": desc["provider_id"],
                 "model": desc["model"],
                 "source": desc["source"],
                 "source_detail": desc["source_detail"],
                 "configured": desc["requested"],
             }
+
+        # 面板口径：不传 umo = 全局默认模型，与 AstrBot 系统配置面板一致。
+        model_status["system"] = _row(
+            await llm_mod.describe_provider(plugin.context, umo=None, model_id="")
+        )
+        model_status["system"]["source_detail"] = "AstrBot 系统配置面板的全局默认模型"
+        # 实际调用口径：主窗口 umo + 插件配置（默认模型 / 用途覆盖）。
+        for purpose in ("schedule", "proactive"):
+            desc = await llm_mod.describe_provider(
+                plugin.context, umo=primary_umo,
+                model_id=llm_mod.model_for(settings, purpose),
+            )
+            model_status[purpose] = _row(desc)
     except Exception as exc:  # noqa: BLE001 - 展示失败不影响总览其余数据
         logger.debug("mine_chat: 读取模型状态失败: %s", exc)
 

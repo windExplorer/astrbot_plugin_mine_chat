@@ -67,6 +67,7 @@ const modelLabel = (m?: ModelStatus) => {
   if (!m || !m.provider_id) return "—";
   return m.model ? `${m.provider_id} · ${m.model}` : m.provider_id;
 };
+const systemModel = computed(() => data.value?.model_status?.system);
 const scheduleModel = computed(() => data.value?.model_status?.schedule);
 const proactiveModel = computed(() => data.value?.model_status?.proactive);
 
@@ -216,11 +217,15 @@ const logColumns = [
 
       <n-card size="small" title="对话模型" class="section">
         <p class="model-hint">
-          这里显示插件<strong>实际调用的模型</strong>和来源。想固定用某个模型，到「配置 → 模型 → 默认模型」选；
-          「跟随系统」在 AstrBot 4.29.x 起跟随的是当前会话 agent 配置的模型，找不到时才用已加载列表的第一个，
-          不再是面板上的全局默认模型。
+          「系统默认」是 AstrBot 系统配置面板里选的全局模型；下面两行是插件<strong>实际调用</strong>的模型。
+          两者不同通常是因为该会话单独设了模型（或落在了别的配置档案），不是插件选错。
+          想让本插件固定用一个模型，到「配置 → 模型 → 默认模型」选即可。
         </p>
         <n-descriptions :column="1" label-placement="left" size="small">
+          <n-descriptions-item label="系统默认（面板）">
+            <n-tag size="small" type="default" :bordered="false">全局</n-tag>
+            <span class="model-value">{{ modelLabel(systemModel) }}</span>
+          </n-descriptions-item>
           <n-descriptions-item label="日程生成">
             <n-tag size="small" :type="modelSourceTag(scheduleModel).type" :bordered="false">
               {{ modelSourceTag(scheduleModel).label }}

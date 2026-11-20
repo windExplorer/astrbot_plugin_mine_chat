@@ -54,26 +54,29 @@ class _Settings:
 
 
 class _Ctx:
-    """模拟 context：get_provider_by_id 同步；provider_manager 上的是 async（4.29.x 的坑）。"""
+    """模拟 context：get_provider_by_id 同步；provider_manager 上的是 async（4.29.x 的坑）。
 
-    def __init__(self, by_id=None, system=None, pm_async=None):
+    by_umo 模拟「会话单独设了模型」：有 umo 时返回会话模型，umo=None 返回全局默认，
+    这样能锁住 v1.4.1 的修复点——面板口径(umo=None) 与会话口径(具体 umo) 可以不同。
+    """
+
+    def __init__(self, by_id=None, system=None, pm_async=None, by_umo=None):
         self._by_id = by_id or {}
         self._system = system
+        self._by_umo = by_umo or {}
         pm = types.SimpleNamespace()
         if pm_async is not None:
             pm.get_provider_by_id = pm_async
         self.provider_manager = pm
-        self._get_using = None
-        self._get_using_async = None
 
     def get_provider_by_id(self, model_id):
         return self._by_id.get(model_id)
 
     def get_using_provider(self, umo=None):
-        return self._system
+        return self._by_umo.get(umo, self._system)
 
     async def get_using_provider_async(self, umo=None):
-        return self._system
+        return self._by_umo.get(umo, self._system)
 
 
 def main():
@@ -109,6 +112,17 @@ def main():
         c.equal("跟随系统 source", d["source"], "system")
         c.equal("跟随系统 provider_id", d["provider_id"], "p2")
         c.check("跟随拿到系统 provider", d["provider"] is system)
+
+        # v1.4.1：面板口径(umo=None) 与会话口径(具体 umo) 可以不同——这正是
+        # 「系统配置 vs 总览卡片不一样」的成因，卡片必须并列展示两者。
+        global_default = _Provider("pg", "model-global")
+        session_override = _Provider("ps", "model-session")
+        ctx2 = _Ctx(system=global_default, by_umo={"aiocqhttp:FriendMessage:10001": session_override})
+        d_panel = await describe_provider(ctx2, umo=None, model_id="")
+        d_session = await describe_provider(ctx2, umo="aiocqhttp:FriendMessage:10001", model_id="")
+        c.equal("面板口径取全局默认", d_panel["provider_id"], "pg")
+        c.equal("会话口径取会话模型", d_session["provider_id"], "ps")
+        c.check("两者确实不同", d_panel["provider_id"] != d_session["provider_id"])
 
         d = await describe_provider(_Ctx(by_id={"bad": "p1"}, system=None), model_id="bad")
         c.equal("解析异常回退系统无结果", d["source"], "none")
