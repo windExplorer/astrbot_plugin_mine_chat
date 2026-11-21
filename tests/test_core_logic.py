@@ -465,7 +465,15 @@ def test_scope_and_segments(c: Checker) -> None:
     c.equal("平台名带 group 不影响判定", umo_kind("mygroup: FriendMessage:1"), "private")
     c.equal("非法 umo", umo_kind("bad-format"), "other")
 
-    gen_ns = load_defs("proactive_gen.py", {"split_segments", "_SEGMENT_SEPARATOR", "MAX_SEGMENT_CHARS"})
+    import prompts as prompts_mod_local
+    gen_ns = load_defs(
+        "proactive_gen.py",
+        {
+            "split_segments", "_SEGMENT_SEPARATOR", "MAX_SEGMENT_CHARS",
+            "strip_prompt_residue", "_prompt_residue_markers",
+        },
+        {"prompts": prompts_mod_local, "logger": _QuietLogger()},
+    )
     split_segments = gen_ns["split_segments"]
 
     c.equal("单条不拆", split_segments("在干嘛呢", 3), ["在干嘛呢"])
@@ -905,7 +913,8 @@ def test_image_backends(c: Checker) -> None:
     )
     c.check(
         "proactive.py 调用 compose_image_prompt 传 anchor_hint",
-        "anchor_hint=await" in _Path(ROOT, "proactive.py").read_text(encoding="utf-8"),
+        ("anchor_hint=await" in _Path(ROOT, "proactive.py").read_text(encoding="utf-8")
+         or "anchor_hint=anchor_hint" in _Path(ROOT, "proactive.py").read_text(encoding="utf-8")),
     )
     kind_prompt = compose(
         activity="在厨房做饭", seed="", mood="", art_style="anime", style="danbooru", language="zh",
@@ -1123,6 +1132,75 @@ def test_image_backends(c: Checker) -> None:
         "persona_prompt=persona_prompt" in _pr
         and "art_style=settings.proactive_image_art_style" in _pr,
     )
+
+
+def test_prompt_leakage(c: Checker) -> None:
+    """v1.5.0：出图提示词/设定不得混进主动消息正文（三层守卫）。"""
+    print("\n[v150] 提示词泄漏防护")
+    import prompts as prompts_mod_local
+
+    # 用真实 prompts 常量构造一条 guard 尾巴（复刻用户实测的样本形态）
+    art = "anime"
+    phrase = prompts_mod_local.image_style_phrase(art, "zh")
+    name = "霜岛绫V4"
+    anchor = "以下是角色的外貌：银发蓝瞳，常穿深色外套"
+    base = "街角的旧书店静静伫立，玻璃窗内透出昏暗的灯光，泛黄的书脊隐约可见"
+    final_prompt = prompts_mod_local.enforce_image_guard(
+        base, art_style=art, style="natural", language="zh",
+        anchor=anchor, character_name=name,
+    )
+
+    ns = load_defs(
+        "proactive_gen.py",
+        {
+            "strip_image_guard", "strip_prompt_residue",
+            "_prompt_residue_markers", "split_segments",
+            "_SEGMENT_SEPARATOR", "MAX_SEGMENT_CHARS",
+        },
+        {"prompts": prompts_mod_local, "logger": _QuietLogger()},
+    )
+    strip_guard = ns["strip_image_guard"]
+    strip_residue = ns["strip_prompt_residue"]
+
+    # —— 源头剥离 ——
+    cleaned = strip_guard(
+        final_prompt, art_style=art, style="natural", language="zh",
+        anchor=anchor, character_name=name,
+    )
+    c.check("源头剥掉画风短句", phrase not in cleaned, f"cleaned={cleaned!r}")
+    c.check("源头剥掉角色身份串", "角色本人：" not in cleaned)
+    c.check("源头剥掉锚点内容", "以下是角色" not in cleaned and "银发蓝瞳" not in cleaned)
+    c.check("源头保留画面主体", "旧书店" in cleaned and "昏暗的灯光" in cleaned)
+    c.equal("留空仍是空", strip_guard(""), "")
+    # guard 参数对不上时不误伤：原文里没有的尾巴不该凭空造出来
+    plain = strip_guard("街角有家旧书店", art_style=art, style="natural", language="zh")
+    c.check("无尾巴时保留原文", "旧书店" in plain)
+
+    # —— 出口兜底 ——
+    mixed = "刚从旧书店回来，风很干。" + phrase + "，角色本人：" + name
+    out, cut = strip_residue(mixed)
+    c.check("出口命中即截断", cut is True)
+    c.check("出口截掉提示词残留", phrase not in out and "角色本人" not in out, f"out={out!r}")
+    c.check("出口保留正常正文", "旧书店" in out and "风很干" in out)
+    clean_text = "刚吃完饭，在河边走了走。"
+    out2, cut2 = strip_residue(clean_text)
+    c.equal("干净文本不截断", (out2, cut2), (clean_text, False))
+
+    # —— 经 split_segments 的整链路（模型复读场景）——
+    leaked = "刚沿着河岸从旧书店回来，风很干。" + phrase + "，角色本人：" + name
+    segments = ns["split_segments"](leaked, 3)
+    c.check("分段输出不含画风词", all(phrase not in s for s in segments), f"segs={segments!r}")
+    c.check("分段输出不含角色身份", all("角色本人" not in s for s in segments))
+
+    # —— 模板/接线守卫 ——
+    hint = prompts_mod_local.build_image_hint(base)
+    c.check("随图模板禁止复画出图术语", "不许把它原样写进消息" in hint and "二次元动漫插画风格" in hint)
+    sys_tpl = prompts_mod_local.PROACTIVE_SYSTEM_TEMPLATE
+    c.check("系统铁律禁止复制提示词原文", "画风标签" in sys_tpl and "角色本人：" in sys_tpl)
+    src_pg = open(os.path.join(ROOT, "proactive_gen.py"), encoding="utf-8").read()
+    src_pr = open(os.path.join(ROOT, "proactive.py"), encoding="utf-8").read()
+    c.check("生成链路调用出口清洗", "strip_prompt_residue(collapsed)" in src_pg)
+    c.check("出图链路调用源头剥离", "strip_image_guard(" in src_pr)
 
 
 def test_channel_reason_codes(c: Checker) -> None:
@@ -1525,6 +1603,7 @@ def main() -> int:
     test_config_paths(checker)
     test_routine(checker)
     test_image_backends(checker)
+    test_prompt_leakage(checker)
     test_channel_reason_codes(checker)
     test_injection_gate(checker)
     test_daylight(checker)

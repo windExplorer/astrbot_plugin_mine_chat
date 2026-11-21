@@ -585,6 +585,111 @@ def is_chinese_text(text: Any, threshold: float = 0.2) -> bool:
     return han / max(1, len(raw)) >= threshold
 
 
+def strip_image_guard(
+    prompt: Any,
+    *,
+    art_style: str = "anime",
+    style: str = "natural",
+    language: str = "zh",
+    anchor: str = "",
+    character_name: str = "",
+) -> str:
+    """从 final_prompt 里剥掉 enforce_image_guard 追加的尾巴，还原成画面主体。
+
+    final_prompt = base + sep + 画风标识 + sep + 角色身份/锚点。这段尾巴是给画图
+    引擎的硬约束，绝不能出现在发给用户的文字正文里。v1.5.0 前 desc 直接取
+    final_prompt[:160]，模型照抄后把画风词/角色锚点当正文发出（用户实测）。
+
+    这里复刻 enforce_image_guard 的追加顺序，从尾部逐个精确移除已知片段；
+    任何一步对不上就保持原样（宁可少剥，不误伤画面主体）。纯函数，不抛异常。
+    """
+    text = " ".join(str(prompt or "").split())
+    if not text:
+        return ""
+
+    art = prompts.normalize_art_style(art_style)
+    tags_mode = (style or "").strip().lower() == "danbooru"
+    en = (language or "").strip().lower() == "en"
+    anchor_clean = " ".join(str(anchor or "").split()).strip(" ,，;；")
+    name = " ".join(str(character_name or "").split())
+    sep = ", " if en else "，"
+    identity_sep = "; " if en else "；"
+
+    # 从尾部构造被追加的片段（顺序与 enforce_image_guard 一致：先身份，再画风）。
+    # 1) 身份段： sep + (the character is {name}{identity_sep}{anchor} | 角色本人：{name}；{anchor})
+    identity_parts: list[str] = []
+    if name:
+        identity_parts.append(f"the character is {name}" if en else f"角色本人：{name}")
+    if anchor_clean:
+        identity_parts.append(anchor_clean)
+    if identity_parts:
+        tail = sep + identity_sep.join(identity_parts)
+        if text.endswith(tail):
+            text = text[: -len(tail)]
+
+    # 2) 画风段： sep + phrase（natural）/ sep + locktags（danbooru）
+    if tags_mode:
+        phrase = prompts.image_art_lock_tags(art)
+    else:
+        phrase = prompts.image_style_phrase(art_style, language)
+    if phrase:
+        # locktags 是逗号串，guard 按 token 逐个拼；整体或以首 token 结尾都可能
+        candidates = [sep + phrase]
+        if tags_mode:
+            candidates += [sep + t.strip() for t in phrase.split(",") if t.strip()]
+        for cand in candidates:
+            if text.endswith(cand):
+                text = text[: -len(cand)]
+                break
+
+    return text.strip(" ，,；;、。.").strip()
+
+
+# 出口兜底：正文里一旦出现这些「出图/设定术语」特征词，就从特征处截断。
+# 从 prompts 的真实常量派生，避免手工维护两份导致漂移。
+def _prompt_residue_markers() -> list[str]:
+    marks: list[str] = []
+    for phrase in prompts._IMAGE_STYLE_PHRASE.values():
+        if phrase:
+            marks.append(phrase)
+    for art in prompts._IMAGE_ART_TEXT.values():
+        if art:
+            marks.append(art)
+    for tags in prompts._IMAGE_ART_LOCK_TAGS.values():
+        first = tags.split(",")[0].strip()
+        if first:
+            marks.append(first)
+    marks += ["角色本人：", "the character is", "以下是相关", "以下是角色"]
+    # 长串优先，避免短串先把长串切断
+    return sorted({m for m in marks if m}, key=len, reverse=True)
+
+
+def strip_prompt_residue(text: str) -> tuple[str, bool]:
+    """出口兜底：截掉模型复读进出图提示词/设定的尾巴。返回 (清洗后文本, 是否截断)。
+
+    只在命中特征词时动手：取最早命中位置，从那里截断到最近的句读边界之前，
+    避免留下半句或生硬断词。源头已剥干净时这里零改动（绝大多数情况）。
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return raw, False
+    hit_pos = len(raw)
+    for mark in _prompt_residue_markers():
+        idx = raw.lower().find(mark.lower())
+        if 0 <= idx < hit_pos:
+            hit_pos = idx
+    if hit_pos >= len(raw):
+        return raw, False
+    head = raw[:hit_pos].rstrip(" ，,；;、。.\n")
+    # 尽量退回上一个完整句子
+    boundary = -1
+    for sep in ("。", "！", "？", "!", "?", "；", ";"):
+        boundary = max(boundary, head.rfind(sep))
+    if boundary >= 0:
+        head = head[: boundary + 1].rstrip()
+    return head, True
+
+
 def split_segments(text: str, max_segments: int) -> list[str]:
     """把模型输出拆成若干条短消息（按独占一行的 --- 分隔）。"""
     raw = (text or "").strip()
@@ -611,6 +716,15 @@ def split_segments(text: str, max_segments: int) -> list[str]:
     result: list[str] = []
     for part in limited:
         collapsed = " ".join(part.split())
+        if not collapsed:
+            continue
+        # v1.5.0 出口兜底：模型偶尔仍会复读画风/设定词，命中即从特征处截断。
+        collapsed, truncated = strip_prompt_residue(collapsed)
+        if truncated:
+            logger.warning(
+                "mine_chat: 主动消息检测到出图提示词/设定残留，已截断：%s",
+                collapsed[:80],
+            )
         if not collapsed:
             continue
         if len(collapsed) > MAX_SEGMENT_CHARS:

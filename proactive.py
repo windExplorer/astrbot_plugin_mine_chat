@@ -35,6 +35,7 @@ from .proactive_gen import (
     is_chinese_text,
     list_image_files,
     make_stub_event,
+    strip_image_guard,
 )
 from .schedule_view import is_sleeping, locate, now_minutes_for
 
@@ -832,6 +833,7 @@ class ProactiveService:
                 persona_prompt = await self.resolver.persona_prompt(persona_id)
             except Exception as exc:  # noqa: BLE001 - 拿不到人设不该挡住出图
                 logger.debug("mine_chat: 读取出图角色设定失败: %s", exc)
+            anchor_hint = await self._resolve_image_anchor(persona_id, settings)
             final_prompt, raw_prompt = await compose_image_prompt(
                 self.context,
                 umo=str(info.get("umo") or "") or None,
@@ -844,7 +846,7 @@ class ProactiveService:
                 language=settings.proactive_image_prompt_language,
                 now_text=now_dt.strftime("%Y-%m-%d %H:%M"),
                 image_kind=image_kind,
-                anchor_hint=await self._resolve_image_anchor(persona_id, settings),
+                anchor_hint=anchor_hint,
                 # v1.0.42：把「此刻是白天/夜里、光照什么方向」作为事实交给提示词，
                 # 并在生成后校验——下午四点的出图提示词不许出现夜色/睡前氛围
                 daylight_fact=daylight.lighting_fact(now_dt),
@@ -888,13 +890,26 @@ class ProactiveService:
                 content=f"anima {os.path.basename(path)}｜{final_prompt[:160]}",
             )
             # desc=交代给文字生成的画面线索。优先级（v1.0.44）：
-            #   ① 出图提示词是**中文**（自然语言模式）→ 原样用它：那就是喂给画图的
+            #   ① 出图提示词是**中文**（自然语言模式）→ 用它：那就是喂给画图的
             #      那段描述，文字与画面说的是同一件事；
             #   ② 英文标签（danbooru）或别的形态 → 退回中文事实摘要
             #      （时段 + 活动 + 画面类型），文字模型读英文标签容易跑偏。
+            # v1.5.0：①必须先用 strip_image_guard 剥掉代码层硬拼的画风标识 +
+            #   角色身份/锚点尾巴——那是给画图引擎的约束，不是画面内容。此前原样
+            #   塞进「随图说明」，模型照抄进正文，就把「二次元动漫插画风格（anime
+            #   style）…角色本人：…；以下是相关」当消息发出去了。剥完若为空则
+            #   退回②的事实摘要，绝不把提示词尾巴交给文案模型。
+            desc = ""
             if is_chinese_text(final_prompt):
-                desc = " ".join(str(final_prompt or "").split())[:160]
-            else:
+                desc = strip_image_guard(
+                    final_prompt,
+                    art_style=settings.proactive_image_art_style,
+                    style=settings.proactive_image_prompt_style,
+                    language=settings.proactive_image_prompt_language,
+                    anchor=anchor_hint,
+                    character_name=character_name,
+                )[:160]
+            if not desc:
                 desc = "；".join(
                     part
                     for part in (
